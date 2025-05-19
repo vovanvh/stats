@@ -1,0 +1,17 @@
+services:
+  server:
+    image: vovanvh/voca:stats-dev
+    container_name: krys-stats
+    build: docker/python/dev
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    env_file:
+      - .env
+    ports:
+      - 8000:8000
+    volumes:
+      - .:/app
+    networks:
+      - devnetwork
+networks:
+  devnetwork:
+    external: true
