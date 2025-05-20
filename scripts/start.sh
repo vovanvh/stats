@@ -21,7 +21,7 @@ GRACEFUL_TIMEOUT=${GRACEFUL_TIMEOUT:-120}
 # Start Gunicorn with production settings
 echo "Starting Gunicorn with $WEB_CONCURRENCY workers"
 exec gunicorn main:app \
-    --bind 0.0.0.0:8001 \
+    --bind 0.0.0.0:80 \
     --workers $WEB_CONCURRENCY \
     --worker-class uvicorn.workers.UvicornWorker \
     --worker-connections $WORKER_CONNECTIONS \
