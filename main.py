@@ -25,11 +25,6 @@ class StatData(BaseModel):
     table: str
     data: List[StatItem]
 
-@app.get("/test/")
-def read_root():
-    client = get_clickhouse_client()
-    return {"Hello": "World", "Host": f"HOST name: {env['HOST']}", "ClickHouse": client.query("SELECT 1").result_rows}
-
 # Health check endpoint
 @app.get("/health")
 async def health_check():
