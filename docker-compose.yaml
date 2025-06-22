@@ -4,6 +4,7 @@ services:
     container_name: krys-stats
     build: docker/python/dev
     command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    restart: always
     env_file:
       - .env
     ports:
