@@ -7,8 +7,17 @@ from app.config import settings
 from pprint import pprint
 from youtube_transcript_api import YouTubeTranscriptApi
 from fastapi import HTTPException
+from fastapi.routing import APIRoute
+
+class SlashInsensitiveAPIRoute(APIRoute):
+    def matches(self, scope):
+        path = scope["path"]
+        if path != "/" and path.endswith("/"):
+            scope["path"] = path.rstrip("/")
+        return super().matches(scope)
 
 app = FastAPI()
+app.router.route_class = SlashInsensitiveAPIRoute
 
 class StatItem(BaseModel):
     language: int
