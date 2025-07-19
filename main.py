@@ -6,14 +6,16 @@ from app.database import get_clickhouse_client
 from app.config import settings
 from pprint import pprint
 from youtube_transcript_api import YouTubeTranscriptApi
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
 
 class SlashInsensitiveAPIRoute(APIRoute):
     def matches(self, scope):
         path = scope["path"]
+        print(f"[MATCHES] incoming path: {path}")
         if path != "/" and path.endswith("/"):
             scope["path"] = path.rstrip("/")
+            print(f"[MATCHES] normalized path: {scope['path']}")
         return super().matches(scope)
 
 app = FastAPI(route_class=SlashInsensitiveAPIRoute)
@@ -34,6 +36,11 @@ class StatItem(BaseModel):
 class StatData(BaseModel):
     table: str
     data: List[StatItem]
+
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    print(f">>> {request.method} {request.url.path}")
+    return await call_next(request)
 
 # Health check endpoint
 @app.get("/health")
