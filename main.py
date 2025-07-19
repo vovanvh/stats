@@ -65,6 +65,7 @@ async def get_youtube_transcript(videoId: str, language: str):
 
 @app.get("/yt-list")
 async def get_available_transcripts(videoId: str):
+    print(f"[MATCHES] incoming path: {videoId}")
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(videoId)
         available_transcripts = [
