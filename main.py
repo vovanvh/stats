@@ -29,25 +29,43 @@ def configure_youtube_api_with_tor():
             'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
         }
         
-        # Monkey patch the global requests module
+        # Store original functions
         original_get = requests.get
         original_post = requests.post
+        original_request = requests.request
         
         def proxied_get(*args, **kwargs):
-            kwargs['proxies'] = proxies
+            # Force proxy usage unless explicitly disabled
+            if 'proxies' not in kwargs:
+                kwargs['proxies'] = proxies
             kwargs['timeout'] = kwargs.get('timeout', 30)
+            print(f"[TOR] GET request via proxy: {args[0] if args else 'unknown URL'}")
             return original_get(*args, **kwargs)
             
         def proxied_post(*args, **kwargs):
-            kwargs['proxies'] = proxies
+            # Force proxy usage unless explicitly disabled
+            if 'proxies' not in kwargs:
+                kwargs['proxies'] = proxies
             kwargs['timeout'] = kwargs.get('timeout', 30)
+            print(f"[TOR] POST request via proxy: {args[0] if args else 'unknown URL'}")
             return original_post(*args, **kwargs)
+            
+        def proxied_request(*args, **kwargs):
+            # Force proxy usage unless explicitly disabled
+            if 'proxies' not in kwargs:
+                kwargs['proxies'] = proxies
+            kwargs['timeout'] = kwargs.get('timeout', 30)
+            method = args[0] if args else kwargs.get('method', 'UNKNOWN')
+            url = args[1] if len(args) > 1 else kwargs.get('url', 'unknown URL')
+            print(f"[TOR] {method} request via proxy: {url}")
+            return original_request(*args, **kwargs)
         
         # Patch the global requests module
         requests.get = proxied_get
         requests.post = proxied_post
+        requests.request = proxied_request
         
-        print(f"[TOR] YouTube API configured to use Tor proxy at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
+        print(f"[TOR] All HTTP requests configured to use Tor proxy at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
     else:
         print("[TOR] Tor proxy disabled, using direct connection")
 
@@ -80,6 +98,34 @@ async def log_requests(request: Request, call_next):
 @app.get("/health")
 async def health_check():
     return {"status": "healthy"}
+
+@app.get("/test-tor")
+async def test_tor_connection():
+    """Test if Tor proxy is working by checking external IP"""
+    try:
+        # Test direct connection
+        direct_response = requests.get("https://httpbin.org/ip", timeout=10, proxies={})
+        direct_ip = direct_response.json().get("origin")
+        
+        # Test through current proxy setup
+        if settings.USE_TOR_PROXY:
+            proxied_response = requests.get("https://httpbin.org/ip", timeout=30)
+            proxied_ip = proxied_response.json().get("origin")
+            
+            return {
+                "tor_enabled": True,
+                "tor_proxy": f"{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}",
+                "direct_ip": direct_ip,
+                "proxied_ip": proxied_ip,
+                "tor_working": direct_ip != proxied_ip
+            }
+        else:
+            return {
+                "tor_enabled": False,
+                "direct_ip": direct_ip
+            }
+    except Exception as e:
+        return {"error": str(e), "tor_enabled": settings.USE_TOR_PROXY}
 
 @app.post("/stats/")
 def create_stat(stat: StatData):

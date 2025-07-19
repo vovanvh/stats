@@ -19,7 +19,7 @@ class Settings(BaseSettings):
 
     # Tor proxy settings
     USE_TOR_PROXY: bool = os.getenv("USE_TOR_PROXY", True)
-    TOR_PROXY_HOST: str = os.getenv("TOR_PROXY_HOST", "tor")
+    TOR_PROXY_HOST: str = os.getenv("TOR_PROXY_HOST", "tor-proxy")
     TOR_PROXY_PORT: int = os.getenv("TOR_PROXY_PORT", 9050)
 
     class Config:

@@ -17,7 +17,7 @@ services:
     env_file:
       - .env
     environment:
-      - TOR_PROXY_HOST=tor
+      - TOR_PROXY_HOST=tor-proxy
       - TOR_PROXY_PORT=9050
     ports:
       - 8000:8000
