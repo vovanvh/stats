@@ -13,14 +13,8 @@ services:
       timeout: 10s
       retries: 3
       start_period: 40s
-    deploy:
-      resources:
-        limits:
-          cpus: '1'
-          memory: 1G
-        reservations:
-          cpus: '0.5'
-          memory: 512M
+    cpus: "0.5"
+    mem_limit: "512m"
     networks:
       - devnetwork
 
