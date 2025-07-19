@@ -65,7 +65,7 @@ async def get_youtube_transcript(videoId: str, language: str):
 
 @app.get("/yt-list")
 async def get_available_transcripts(videoId: str):
-    print(f"[MATCHES] incoming path: {videoId}")
+    print(f"[videoId] incoming path: {videoId}")
     try:
         transcript_list = YouTubeTranscriptApi.list_transcripts(videoId)
         available_transcripts = [
@@ -79,6 +79,7 @@ async def get_available_transcripts(videoId: str):
         ]
         return {"available_transcripts": available_transcripts}
     except Exception as e:
+        print(f"ERROR: {e}")
         raise HTTPException(status_code=404, detail=str(e))
 
 
