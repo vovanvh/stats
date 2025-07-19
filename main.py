@@ -21,56 +21,56 @@ class SlashInsensitiveAPIRoute(APIRoute):
 
 app = FastAPI(route_class=SlashInsensitiveAPIRoute)
 
-def configure_youtube_api_with_tor():
-    """Configure youtube_transcript_api to use Tor proxy if enabled"""
-    if settings.USE_TOR_PROXY:
-        proxies = {
-            'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
-            'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
-        }
+# def configure_youtube_api_with_tor():
+#     """Configure youtube_transcript_api to use Tor proxy if enabled"""
+#     if settings.USE_TOR_PROXY:
+#         proxies = {
+#             'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
+#             'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
+#         }
         
-        # Store original functions
-        original_get = requests.get
-        original_post = requests.post
-        original_request = requests.request
+#         # Store original functions
+#         original_get = requests.get
+#         original_post = requests.post
+#         original_request = requests.request
         
-        def proxied_get(*args, **kwargs):
-            # Force proxy usage unless explicitly disabled
-            if 'proxies' not in kwargs:
-                kwargs['proxies'] = proxies
-            kwargs['timeout'] = kwargs.get('timeout', 30)
-            print(f"[TOR] GET request via proxy: {args[0] if args else 'unknown URL'}")
-            return original_get(*args, **kwargs)
+#         def proxied_get(*args, **kwargs):
+#             # Force proxy usage unless explicitly disabled
+#             if 'proxies' not in kwargs:
+#                 kwargs['proxies'] = proxies
+#             kwargs['timeout'] = kwargs.get('timeout', 30)
+#             print(f"[TOR] GET request via proxy: {args[0] if args else 'unknown URL'}")
+#             return original_get(*args, **kwargs)
             
-        def proxied_post(*args, **kwargs):
-            # Force proxy usage unless explicitly disabled
-            if 'proxies' not in kwargs:
-                kwargs['proxies'] = proxies
-            kwargs['timeout'] = kwargs.get('timeout', 30)
-            print(f"[TOR] POST request via proxy: {args[0] if args else 'unknown URL'}")
-            return original_post(*args, **kwargs)
+#         def proxied_post(*args, **kwargs):
+#             # Force proxy usage unless explicitly disabled
+#             if 'proxies' not in kwargs:
+#                 kwargs['proxies'] = proxies
+#             kwargs['timeout'] = kwargs.get('timeout', 30)
+#             print(f"[TOR] POST request via proxy: {args[0] if args else 'unknown URL'}")
+#             return original_post(*args, **kwargs)
             
-        def proxied_request(*args, **kwargs):
-            # Force proxy usage unless explicitly disabled
-            if 'proxies' not in kwargs:
-                kwargs['proxies'] = proxies
-            kwargs['timeout'] = kwargs.get('timeout', 30)
-            method = args[0] if args else kwargs.get('method', 'UNKNOWN')
-            url = args[1] if len(args) > 1 else kwargs.get('url', 'unknown URL')
-            print(f"[TOR] {method} request via proxy: {url}")
-            return original_request(*args, **kwargs)
+#         def proxied_request(*args, **kwargs):
+#             # Force proxy usage unless explicitly disabled
+#             if 'proxies' not in kwargs:
+#                 kwargs['proxies'] = proxies
+#             kwargs['timeout'] = kwargs.get('timeout', 30)
+#             method = args[0] if args else kwargs.get('method', 'UNKNOWN')
+#             url = args[1] if len(args) > 1 else kwargs.get('url', 'unknown URL')
+#             print(f"[TOR] {method} request via proxy: {url}")
+#             return original_request(*args, **kwargs)
         
-        # Patch the global requests module
-        requests.get = proxied_get
-        requests.post = proxied_post
-        requests.request = proxied_request
+#         # Patch the global requests module
+#         requests.get = proxied_get
+#         requests.post = proxied_post
+#         requests.request = proxied_request
         
-        print(f"[TOR] All HTTP requests configured to use Tor proxy at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
-    else:
-        print("[TOR] Tor proxy disabled, using direct connection")
+#         print(f"[TOR] All HTTP requests configured to use Tor proxy at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
+#     else:
+#         print("[TOR] Tor proxy disabled, using direct connection")
 
 # Configure Tor proxy on startup
-configure_youtube_api_with_tor()
+#configure_youtube_api_with_tor()
 
 class StatItem(BaseModel):
     language: int
@@ -141,7 +141,10 @@ async def get_youtube_transcript(videoId: str, language: str):
         print(f"[YT] Getting transcript for video {videoId} in language {language}")
         if settings.USE_TOR_PROXY:
             print(f"[YT] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
-        transcript = YouTubeTranscriptApi.get_transcript(videoId, languages=[language])
+        transcript = YouTubeTranscriptApi.get_transcript(videoId, languages=[language], proxies = {
+            'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
+            'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
+        })
         return {"transcript": transcript}
     except Exception as e:
         error_msg = str(e)
@@ -157,7 +160,10 @@ async def get_available_transcripts(videoId: str):
         print(f"[YT-LIST] Getting available transcripts for video {videoId}")
         if settings.USE_TOR_PROXY:
             print(f"[YT-LIST] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
-        transcript_list = YouTubeTranscriptApi.list_transcripts(videoId)
+        transcript_list = YouTubeTranscriptApi.list_transcripts(videoId, proxies = {
+            'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
+            'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
+        })
         available_transcripts = [
             {
                 "language": t.language,
