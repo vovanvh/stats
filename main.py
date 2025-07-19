@@ -16,8 +16,7 @@ class SlashInsensitiveAPIRoute(APIRoute):
             scope["path"] = path.rstrip("/")
         return super().matches(scope)
 
-app = FastAPI()
-app.router.route_class = SlashInsensitiveAPIRoute
+app = FastAPI(route_class=SlashInsensitiveAPIRoute)
 
 class StatItem(BaseModel):
     language: int
