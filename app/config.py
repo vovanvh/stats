@@ -17,6 +17,11 @@ class Settings(BaseSettings):
     CLICKHOUSE_DATABASE: str = os.getenv("CLICKHOUSE_DATABASE", "default")
     CLICKHOUSE_SECURE: bool = os.getenv("CLICKHOUSE_SECURE", False)
 
+    # Tor proxy settings
+    USE_TOR_PROXY: bool = os.getenv("USE_TOR_PROXY", True)
+    TOR_PROXY_HOST: str = os.getenv("TOR_PROXY_HOST", "tor")
+    TOR_PROXY_PORT: int = os.getenv("TOR_PROXY_PORT", 9050)
+
     class Config:
         case_sensitive = True
         extra = "allow"

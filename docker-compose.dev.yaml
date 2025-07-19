@@ -1,4 +1,13 @@
 services:
+  tor:
+    image: dperson/torproxy
+    container_name: tor-proxy
+    restart: always
+    ports:
+      - "9050:9050"
+    networks:
+      - devnetwork
+
   server:
     image: vovanvh/voca:stats-dev
     container_name: krys-stats
@@ -7,10 +16,15 @@ services:
     restart: always
     env_file:
       - .env
+    environment:
+      - TOR_PROXY_HOST=tor
+      - TOR_PROXY_PORT=9050
     ports:
       - 8000:8000
     volumes:
       - .:/app
+    depends_on:
+      - tor
     networks:
       - devnetwork
 networks:

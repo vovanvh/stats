@@ -8,6 +8,7 @@ from pprint import pprint
 from youtube_transcript_api import YouTubeTranscriptApi
 from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
+import requests
 
 class SlashInsensitiveAPIRoute(APIRoute):
     def matches(self, scope):
@@ -19,6 +20,39 @@ class SlashInsensitiveAPIRoute(APIRoute):
         return super().matches(scope)
 
 app = FastAPI(route_class=SlashInsensitiveAPIRoute)
+
+def configure_youtube_api_with_tor():
+    """Configure youtube_transcript_api to use Tor proxy if enabled"""
+    if settings.USE_TOR_PROXY:
+        proxies = {
+            'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
+            'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
+        }
+        
+        # Monkey patch the global requests module
+        original_get = requests.get
+        original_post = requests.post
+        
+        def proxied_get(*args, **kwargs):
+            kwargs['proxies'] = proxies
+            kwargs['timeout'] = kwargs.get('timeout', 30)
+            return original_get(*args, **kwargs)
+            
+        def proxied_post(*args, **kwargs):
+            kwargs['proxies'] = proxies
+            kwargs['timeout'] = kwargs.get('timeout', 30)
+            return original_post(*args, **kwargs)
+        
+        # Patch the global requests module
+        requests.get = proxied_get
+        requests.post = proxied_post
+        
+        print(f"[TOR] YouTube API configured to use Tor proxy at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
+    else:
+        print("[TOR] Tor proxy disabled, using direct connection")
+
+# Configure Tor proxy on startup
+configure_youtube_api_with_tor()
 
 class StatItem(BaseModel):
     language: int
@@ -58,15 +92,25 @@ def create_stat(stat: StatData):
 @app.get("/yt")
 async def get_youtube_transcript(videoId: str, language: str):
     try:
+        print(f"[YT] Getting transcript for video {videoId} in language {language}")
+        if settings.USE_TOR_PROXY:
+            print(f"[YT] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
         transcript = YouTubeTranscriptApi.get_transcript(videoId, languages=[language])
         return {"transcript": transcript}
     except Exception as e:
-        raise HTTPException(status_code=404, detail=str(e))
+        error_msg = str(e)
+        if "Connection" in error_msg or "timeout" in error_msg.lower():
+            print(f"[YT] Connection error (possibly Tor-related): {error_msg}")
+            raise HTTPException(status_code=503, detail=f"Connection error: {error_msg}")
+        print(f"[YT] Error: {error_msg}")
+        raise HTTPException(status_code=404, detail=error_msg)
 
 @app.get("/yt-list")
 async def get_available_transcripts(videoId: str):
-    print(f"[videoId] incoming path: {videoId}")
     try:
+        print(f"[YT-LIST] Getting available transcripts for video {videoId}")
+        if settings.USE_TOR_PROXY:
+            print(f"[YT-LIST] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
         transcript_list = YouTubeTranscriptApi.list_transcripts(videoId)
         available_transcripts = [
             {
@@ -79,8 +123,12 @@ async def get_available_transcripts(videoId: str):
         ]
         return {"available_transcripts": available_transcripts}
     except Exception as e:
-        print(f"ERROR: {e}")
-        raise HTTPException(status_code=404, detail=str(e))
+        error_msg = str(e)
+        if "Connection" in error_msg or "timeout" in error_msg.lower():
+            print(f"[YT-LIST] Connection error (possibly Tor-related): {error_msg}")
+            raise HTTPException(status_code=503, detail=f"Connection error: {error_msg}")
+        print(f"[YT-LIST] Error: {error_msg}")
+        raise HTTPException(status_code=404, detail=error_msg)
 
 
 def extract_columns_and_data(rows: list[dict]) -> tuple[list[str], list[list]]:
