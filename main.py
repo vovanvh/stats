@@ -6,9 +6,12 @@ from app.database import get_clickhouse_client
 from app.config import settings
 from pprint import pprint
 from youtube_transcript_api import YouTubeTranscriptApi
+from youtube_transcript_api._api import TranscriptList
 from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
 import requests
+from requests.adapters import HTTPAdapter
+from requests.packages.urllib3.util.retry import Retry
 
 class SlashInsensitiveAPIRoute(APIRoute):
     def matches(self, scope):
@@ -20,6 +23,31 @@ class SlashInsensitiveAPIRoute(APIRoute):
         return super().matches(scope)
 
 app = FastAPI(route_class=SlashInsensitiveAPIRoute)
+
+def create_session_with_timeout(timeout=120):
+    """Create a requests session with default timeout and retry logic"""
+    session = requests.Session()
+
+    # Configure retry strategy
+    retry_strategy = Retry(
+        total=3,
+        backoff_factor=1,
+        status_forcelist=[429, 500, 502, 503, 504],
+    )
+
+    adapter = HTTPAdapter(max_retries=retry_strategy)
+    session.mount("http://", adapter)
+    session.mount("https://", adapter)
+
+    # Monkey-patch session.request to add default timeout
+    original_request = session.request
+    def request_with_timeout(*args, **kwargs):
+        if 'timeout' not in kwargs:
+            kwargs['timeout'] = timeout
+        return original_request(*args, **kwargs)
+    session.request = request_with_timeout
+
+    return session
 
 # def configure_youtube_api_with_tor():
 #     """Configure youtube_transcript_api to use Tor proxy if enabled"""
@@ -141,10 +169,23 @@ async def get_youtube_transcript(videoId: str, language: str):
         print(f"[YT] Getting transcript for video {videoId} in language {language}")
         if settings.USE_TOR_PROXY:
             print(f"[YT] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
-        transcript = YouTubeTranscriptApi.get_transcript(videoId, languages=[language], proxies = {
+
+        # Use custom session with timeout
+        session = create_session_with_timeout(timeout=120)
+        session.proxies = {
             'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
             'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
-        })
+        }
+
+        # Temporarily patch requests to use our session
+        original_get = requests.get
+        requests.get = lambda *args, **kwargs: session.get(*args, **kwargs)
+
+        try:
+            transcript = YouTubeTranscriptApi.get_transcript(videoId, languages=[language])
+        finally:
+            requests.get = original_get
+
         return {"transcript": transcript}
     except Exception as e:
         error_msg = str(e)
@@ -160,10 +201,23 @@ async def get_available_transcripts(videoId: str):
         print(f"[YT-LIST] Getting available transcripts for video {videoId}")
         if settings.USE_TOR_PROXY:
             print(f"[YT-LIST] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
-        transcript_list = YouTubeTranscriptApi.list_transcripts(videoId, proxies = {
+
+        # Use custom session with timeout
+        session = create_session_with_timeout(timeout=120)
+        session.proxies = {
             'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
             'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
-        })
+        }
+
+        # Temporarily patch requests to use our session
+        original_get = requests.get
+        requests.get = lambda *args, **kwargs: session.get(*args, **kwargs)
+
+        try:
+            transcript_list = YouTubeTranscriptApi.list_transcripts(videoId)
+        finally:
+            requests.get = original_get
+
         available_transcripts = [
             {
                 "language": t.language,
