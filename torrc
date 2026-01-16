@@ -1,0 +1,36 @@
+# Tor Configuration for my-stats project
+# This configures Tor to prefer exit nodes from specific countries
+# and enables control port for programmatic circuit management
+
+# SOCKS5 proxy port (used by application)
+SocksPort 0.0.0.0:9050
+
+# Control port for programmatic control (NEWNYM signal, etc.)
+ControlPort 0.0.0.0:9051
+
+# Hashed password for control port authentication
+# Password: my-stats-tor-2026
+HashedControlPassword 16:92BFFA069EFC390060244D9E9E248BE50684B4C938207D701D9364AE59
+
+# Prefer exit nodes from these countries (less likely to be blocked by YouTube)
+# US = United States, GB = United Kingdom, CA = Canada, AU = Australia
+# DE = Germany, NL = Netherlands, FR = France, SE = Sweden
+ExitNodes {US},{GB},{CA},{AU},{DE},{NL},{FR},{SE}
+
+# Allow fallback to other exit nodes if preferred ones are unavailable
+# StrictNodes 1 would only use specified countries (not recommended)
+StrictNodes 0
+
+# Circuit timeout and performance settings
+CircuitBuildTimeout 60
+LearnCircuitBuildTimeout 0
+MaxCircuitDirtiness 600
+
+# Logging
+Log notice stdout
+
+# Reduce logging of client activity for privacy
+SafeLogging 1
+
+# Enable faster circuit creation
+NumEntryGuards 8

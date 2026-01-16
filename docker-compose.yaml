@@ -1,10 +1,13 @@
 services:
   tor:
-    image: dperson/torproxy
+    image: osminogin/tor-simple:latest
     container_name: tor-proxy
     restart: always
     ports:
       - "9050:9050"
+      - "9051:9051"
+    volumes:
+      - ./torrc:/etc/tor/torrc:ro
     networks:
       - devnetwork
 

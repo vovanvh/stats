@@ -687,32 +687,226 @@ Return JSON response
 - Avoid rate limiting
 - Bypass geographic restrictions
 - Distribute requests across exit nodes
+- Rotate IP addresses to bypass blocks
 
-### Configuration
+### Architecture
 
-**Proxy Type**: SOCKS5
-**Host**: `tor-proxy` (container name)
-**Port**: 9050
+The project uses a containerized Tor proxy with advanced features:
 
-### Usage Pattern
+**Docker Image**: `osminogin/tor-simple:latest` (updated from dperson/torproxy)
+**SOCKS5 Port**: 9050 (for application traffic)
+**Control Port**: 9051 (for programmatic control)
+**Configuration**: Custom `torrc` file with optimized settings
 
-All YouTube API calls include proxy configuration:
+### Configuration Files
+
+#### torrc (Tor Configuration)
+```
+SocksPort 0.0.0.0:9050          # SOCKS5 proxy for applications
+ControlPort 0.0.0.0:9051        # Control port for API
+HashedControlPassword ...        # Authentication for control port
+ExitNodes {US},{GB},{CA},...    # Prefer specific countries
+StrictNodes 0                    # Allow fallback
+CircuitBuildTimeout 60          # Performance tuning
+MaxCircuitDirtiness 600         # Circuit lifetime
+```
+
+#### Docker Compose
+```yaml
+tor:
+  image: osminogin/tor-simple:latest
+  ports:
+    - "9050:9050"  # SOCKS5 proxy
+    - "9051:9051"  # Control port
+  volumes:
+    - ./torrc:/etc/tor/torrc:ro  # Custom config
+```
+
+### Application Configuration
+
+**Environment Variables**:
+- `USE_TOR_PROXY`: Enable/disable Tor (default: True)
+- `TOR_PROXY_HOST`: Tor hostname (default: "tor-proxy")
+- `TOR_PROXY_PORT`: SOCKS5 port (default: 9050)
+
+**SOCKS5 Implementation**:
+The application patches `requests.Session.__init__` to inject SOCKS5 proxies into all HTTP sessions created by youtube-transcript-api:
+
 ```python
-proxies = {
-    'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
-    'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
+def patched_session_init(self, *args, **kwargs):
+    original_session_init(self, *args, **kwargs)
+    if proxies:
+        self.proxies.update(proxies)
+```
+
+This ensures all HTTP requests (including those from third-party libraries) properly use SOCKS5 protocol instead of raw HTTP.
+
+### Country-Specific Exit Nodes
+
+The Tor configuration prefers exit nodes from countries with:
+- Reliable infrastructure
+- Less aggressive YouTube blocking
+- Good bandwidth
+
+**Configured Countries**:
+- 🇺🇸 United States (US)
+- 🇬🇧 United Kingdom (GB)
+- 🇨🇦 Canada (CA)
+- 🇦🇺 Australia (AU)
+- 🇩🇪 Germany (DE)
+- 🇳🇱 Netherlands (NL)
+- 🇫🇷 France (FR)
+- 🇸🇪 Sweden (SE)
+
+**Fallback Behavior**: If preferred nodes are unavailable, Tor automatically falls back to any available exit node (`StrictNodes 0`).
+
+### IP Rotation Features
+
+#### Automatic Rotation
+- New circuits created approximately every 10 minutes
+- Different destinations use different circuits
+- Guard node remains constant for 2-3 months (security)
+
+#### Manual Rotation
+**Endpoint**: `POST /tor/new-identity`
+
+**Purpose**: Force immediate circuit change when current exit node is blocked
+
+**Authentication**: Control port password (configured in torrc)
+
+**Rate Limit**: ~1 request per 10 seconds (Tor limitation)
+
+**Response**:
+```json
+{
+  "status": "success",
+  "message": "New Tor identity requested...",
+  "new_exit_ip": "185.220.101.16",
+  "note": "Tor rate-limits this request..."
 }
 ```
 
-### Toggle Mechanism
-- Controlled by `USE_TOR_PROXY` environment variable
-- Can be disabled without code changes
-- Fallback to direct connection
+**Implementation**:
+```python
+# Connect to Tor control port
+s.connect((settings.TOR_PROXY_HOST, 9051))
+s.send(b'AUTHENTICATE "password"\r\n')
+s.send(b'SIGNAL NEWNYM\r\n')  # Request new identity
+```
 
-### Monitoring
-- `/test-tor` endpoint verifies proxy functionality
-- Logs proxy usage for each request
-- Differentiates connection vs. content errors
+### API Endpoints
+
+#### Test Tor Connection
+```
+GET /test-tor
+```
+Verifies Tor proxy is working by comparing direct IP vs proxied IP.
+
+**Response**:
+```json
+{
+  "tor_enabled": true,
+  "tor_proxy": "tor-proxy:9050",
+  "direct_ip": "123.45.67.89",
+  "proxied_ip": "185.220.101.16",
+  "tor_working": true
+}
+```
+
+#### Request New Identity
+```
+POST /tor/new-identity
+```
+Forces Tor to switch to a new circuit and exit IP.
+
+**Use Cases**:
+- Current exit node blocked by YouTube
+- Need fresh IP for rate limit reset
+- Testing with different geographic locations
+
+**Client Integration** (NestJS example):
+```typescript
+// Before retrying failed request
+await axios.post('http://krys-stats:8000/tor/new-identity');
+await sleep(2000); // Wait for circuit establishment
+// Retry request with new IP
+```
+
+### Monitoring and Troubleshooting
+
+#### Log Messages
+
+**Successful Operation**:
+```
+[YT] Using Tor proxy: tor-proxy:9050
+[TOR] Requesting new identity via control port
+[TOR] New identity requested successfully
+```
+
+**Previous Issues (Now Fixed)**:
+```
+[warn] Socks version 71 not recognized  # Fixed: Proper SOCKS5 implementation
+[warn] At least one protocol...         # Fixed: Updated Tor version
+```
+
+#### Health Checks
+
+1. **Test Tor connectivity**: `GET /test-tor`
+2. **View Tor logs**: `docker logs tor-proxy`
+3. **View application logs**: `docker logs krys-stats`
+
+#### Common Issues
+
+**YouTube 404 Errors**: Exit node is blocked
+- **Solution**: Call `/tor/new-identity` to get new IP
+- **Prevention**: Implement retry logic in client
+
+**Control Port Errors**: Control port not accessible
+- **Solution**: Verify torrc configuration and port 9051 is exposed
+
+**SOCKS Protocol Errors**: Outdated configuration
+- **Solution**: Ensure using latest code with Session patching
+
+### Security Considerations
+
+**Control Port Authentication**:
+- Password-protected (HashedControlPassword in torrc)
+- Not exposed publicly (Docker network only)
+- Changed from default
+
+**SOCKS Port**:
+- Only accessible within Docker network
+- Not exposed to public internet
+- Proper SOCKS5 protocol implementation
+
+**Exit Node Selection**:
+- Geographic diversity
+- Automatic rotation
+- No strict node enforcement (fallback allowed)
+
+### Performance Characteristics
+
+**Latency**: Additional 200-2000ms per request (Tor routing overhead)
+**Throughput**: Depends on exit node capacity
+**Circuit Establishment**: 1-5 seconds for new circuits
+**IP Rotation**: ~10 minutes automatic, instant manual (rate-limited)
+
+### Upgrade Path (January 2026)
+
+**Previous Implementation**:
+- Image: `dperson/torproxy` (outdated)
+- No control port
+- No country selection
+- HTTP-to-SOCKS protocol issues
+
+**Current Implementation**:
+- Image: `osminogin/tor-simple:latest`
+- Control port enabled (9051)
+- Country-specific exit nodes
+- Proper SOCKS5 protocol support
+- Manual IP rotation API
+
+See [tor-proxy.md](tor-proxy.md) for complete technical documentation.
 
 ## Deployment Procedures
 
@@ -867,6 +1061,20 @@ curl http://localhost:8000/health
 ### Test Tor Connection
 ```bash
 curl http://localhost:8000/test-tor
+```
+
+### Request New Tor Identity
+```bash
+# Force Tor to switch to a new circuit/IP
+curl -X POST http://localhost:8000/tor/new-identity
+
+# Example response:
+# {
+#   "status": "success",
+#   "message": "New Tor identity requested. New circuit should be established within 1-2 seconds.",
+#   "new_exit_ip": "185.220.101.16",
+#   "note": "Tor rate-limits this request to approximately once per 10 seconds."
+# }
 ```
 
 ### Submit Statistics
