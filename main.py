@@ -318,6 +318,8 @@ async def get_youtube_transcript(videoId: str, language: str):
             original_session_init(self, *args, **kwargs)
             if proxies:
                 self.proxies.update(proxies)
+                # Disable compression to avoid Tor's compression bomb detection
+                self.headers.update({'Accept-Encoding': 'identity'})
                 # Set timeout for all requests
                 original_request = self.request
                 def request_with_timeout(*args, **kwargs):
@@ -361,6 +363,8 @@ async def get_available_transcripts(videoId: str):
             original_session_init(self, *args, **kwargs)
             if proxies:
                 self.proxies.update(proxies)
+                # Disable compression to avoid Tor's compression bomb detection
+                self.headers.update({'Accept-Encoding': 'identity'})
                 # Set timeout for all requests
                 original_request = self.request
                 def request_with_timeout(*args, **kwargs):
