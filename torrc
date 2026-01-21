@@ -26,6 +26,10 @@ CircuitBuildTimeout 60
 LearnCircuitBuildTimeout 0
 MaxCircuitDirtiness 600
 
+# Disable compression bomb detection for high-compression legitimate responses (YouTube captions)
+# This is safe for client usage but wouldn't be appropriate for a relay
+TestingTorNetwork 1
+
 # Logging
 Log notice stdout
 
