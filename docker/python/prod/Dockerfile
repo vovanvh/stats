@@ -51,6 +51,10 @@ RUN apt-get update \
 COPY --from=builder /app/wheels /wheels
 RUN pip install --no-cache /wheels/*
 
+# Install Playwright dependencies and browser
+RUN playwright install-deps chromium \
+    && playwright install chromium
+
 # Copy project files
 COPY --chown=app:app . .
 
