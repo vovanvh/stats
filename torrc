@@ -15,7 +15,7 @@ HashedControlPassword 16:92BFFA069EFC390060244D9E9E248BE50684B4C938207D701D9364A
 # Prefer exit nodes from these countries (less likely to be blocked by YouTube)
 # US = United States, GB = United Kingdom, CA = Canada, AU = Australia
 # DE = Germany, NL = Netherlands, FR = France, SE = Sweden
-ExitNodes {US},{GB},{CA},{AU},{DE},{NL},{FR},{SE}
+#ExitNodes {US},{GB},{CA},{AU},{DE},{NL},{FR},{SE}
 
 # Allow fallback to other exit nodes if preferred ones are unavailable
 # StrictNodes 1 would only use specified countries (not recommended)
