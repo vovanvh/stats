@@ -6,12 +6,10 @@ from app.database import get_clickhouse_client
 from app.config import settings
 from pprint import pprint
 from youtube_transcript_api import YouTubeTranscriptApi
-from youtube_transcript_api._api import TranscriptList
+from youtube_transcript_api.proxies import GenericProxyConfig
 from fastapi import HTTPException, Request
 from fastapi.routing import APIRoute
 import requests
-from requests.adapters import HTTPAdapter
-from requests.packages.urllib3.util.retry import Retry
 import socket
 import time
 import asyncio
@@ -31,81 +29,6 @@ class SlashInsensitiveAPIRoute(APIRoute):
 
 app = FastAPI(route_class=SlashInsensitiveAPIRoute)
 
-def create_session_with_timeout(timeout=120):
-    """Create a requests session with default timeout and retry logic"""
-    session = requests.Session()
-
-    # Configure retry strategy
-    retry_strategy = Retry(
-        total=3,
-        backoff_factor=1,
-        status_forcelist=[429, 500, 502, 503, 504],
-    )
-
-    adapter = HTTPAdapter(max_retries=retry_strategy)
-    session.mount("http://", adapter)
-    session.mount("https://", adapter)
-
-    # Monkey-patch session.request to add default timeout
-    original_request = session.request
-    def request_with_timeout(*args, **kwargs):
-        if 'timeout' not in kwargs:
-            kwargs['timeout'] = timeout
-        return original_request(*args, **kwargs)
-    session.request = request_with_timeout
-
-    return session
-
-# def configure_youtube_api_with_tor():
-#     """Configure youtube_transcript_api to use Tor proxy if enabled"""
-#     if settings.USE_TOR_PROXY:
-#         proxies = {
-#             'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
-#             'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
-#         }
-        
-#         # Store original functions
-#         original_get = requests.get
-#         original_post = requests.post
-#         original_request = requests.request
-        
-#         def proxied_get(*args, **kwargs):
-#             # Force proxy usage unless explicitly disabled
-#             if 'proxies' not in kwargs:
-#                 kwargs['proxies'] = proxies
-#             kwargs['timeout'] = kwargs.get('timeout', 30)
-#             print(f"[TOR] GET request via proxy: {args[0] if args else 'unknown URL'}")
-#             return original_get(*args, **kwargs)
-            
-#         def proxied_post(*args, **kwargs):
-#             # Force proxy usage unless explicitly disabled
-#             if 'proxies' not in kwargs:
-#                 kwargs['proxies'] = proxies
-#             kwargs['timeout'] = kwargs.get('timeout', 30)
-#             print(f"[TOR] POST request via proxy: {args[0] if args else 'unknown URL'}")
-#             return original_post(*args, **kwargs)
-            
-#         def proxied_request(*args, **kwargs):
-#             # Force proxy usage unless explicitly disabled
-#             if 'proxies' not in kwargs:
-#                 kwargs['proxies'] = proxies
-#             kwargs['timeout'] = kwargs.get('timeout', 30)
-#             method = args[0] if args else kwargs.get('method', 'UNKNOWN')
-#             url = args[1] if len(args) > 1 else kwargs.get('url', 'unknown URL')
-#             print(f"[TOR] {method} request via proxy: {url}")
-#             return original_request(*args, **kwargs)
-        
-#         # Patch the global requests module
-#         requests.get = proxied_get
-#         requests.post = proxied_post
-#         requests.request = proxied_request
-        
-#         print(f"[TOR] All HTTP requests configured to use Tor proxy at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
-#     else:
-#         print("[TOR] Tor proxy disabled, using direct connection")
-
-# Configure Tor proxy on startup
-#configure_youtube_api_with_tor()
 
 class StatItem(BaseModel):
     language: int
@@ -298,6 +221,18 @@ def create_stat(stat: StatData):
     client.insert(stat.table, data, column_names)
     return {"status": "success"}
 
+def get_youtube_api_client() -> YouTubeTranscriptApi:
+    """Create a YouTubeTranscriptApi client with optional Tor proxy configuration"""
+    if settings.USE_TOR_PROXY:
+        proxy_url = f"socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}"
+        proxy_config = GenericProxyConfig(
+            http_url=proxy_url,
+            https_url=proxy_url,
+        )
+        return YouTubeTranscriptApi(proxy_config=proxy_config)
+    return YouTubeTranscriptApi()
+
+
 @app.get("/yt")
 async def get_youtube_transcript(videoId: str, language: str):
     try:
@@ -305,41 +240,18 @@ async def get_youtube_transcript(videoId: str, language: str):
         if settings.USE_TOR_PROXY:
             print(f"[YT] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
 
-        # Create proxies dict
-        proxies = {
-            'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
-            'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
-        } if settings.USE_TOR_PROXY else None
+        ytt_api = get_youtube_api_client()
+        transcript = ytt_api.fetch(videoId, languages=[language])
 
-        # Patch requests.Session to always include proxies
-        original_session_init = requests.Session.__init__
-
-        def patched_session_init(self, *args, **kwargs):
-            original_session_init(self, *args, **kwargs)
-            if proxies:
-                self.proxies.update(proxies)
-                # Disable compression to avoid Tor's compression bomb detection
-                self.headers.update({'Accept-Encoding': 'identity'})
-                # Set timeout for all requests
-                original_request = self.request
-                def request_with_timeout(*args, **kwargs):
-                    kwargs.setdefault('timeout', 120)
-                    return original_request(*args, **kwargs)
-                self.request = request_with_timeout
-
-        requests.Session.__init__ = patched_session_init
-
-        try:
-            transcript = YouTubeTranscriptApi.get_transcript(videoId, languages=[language])
-        finally:
-            requests.Session.__init__ = original_session_init
-
-        return {"transcript": transcript}
+        return {"transcript": transcript.to_raw_data()}
     except Exception as e:
         error_msg = str(e)
         if "Connection" in error_msg or "timeout" in error_msg.lower():
             print(f"[YT] Connection error (possibly Tor-related): {error_msg}")
             raise HTTPException(status_code=503, detail=f"Connection error: {error_msg}")
+        if "IpBlocked" in error_msg or "429" in error_msg:
+            print(f"[YT] IP blocked by YouTube: {error_msg}")
+            raise HTTPException(status_code=429, detail="YouTube has blocked this IP. Try requesting a new Tor identity via POST /tor/new-identity")
         print(f"[YT] Error: {error_msg}")
         raise HTTPException(status_code=404, detail=error_msg)
 
@@ -350,34 +262,8 @@ async def get_available_transcripts(videoId: str):
         if settings.USE_TOR_PROXY:
             print(f"[YT-LIST] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
 
-        # Create proxies dict
-        proxies = {
-            'http': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}',
-            'https': f'socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}'
-        } if settings.USE_TOR_PROXY else None
-
-        # Patch requests.Session to always include proxies
-        original_session_init = requests.Session.__init__
-
-        def patched_session_init(self, *args, **kwargs):
-            original_session_init(self, *args, **kwargs)
-            if proxies:
-                self.proxies.update(proxies)
-                # Disable compression to avoid Tor's compression bomb detection
-                self.headers.update({'Accept-Encoding': 'identity'})
-                # Set timeout for all requests
-                original_request = self.request
-                def request_with_timeout(*args, **kwargs):
-                    kwargs.setdefault('timeout', 120)
-                    return original_request(*args, **kwargs)
-                self.request = request_with_timeout
-
-        requests.Session.__init__ = patched_session_init
-
-        try:
-            transcript_list = YouTubeTranscriptApi.list_transcripts(videoId)
-        finally:
-            requests.Session.__init__ = original_session_init
+        ytt_api = get_youtube_api_client()
+        transcript_list = ytt_api.list(videoId)
 
         available_transcripts = [
             {
@@ -394,6 +280,9 @@ async def get_available_transcripts(videoId: str):
         if "Connection" in error_msg or "timeout" in error_msg.lower():
             print(f"[YT-LIST] Connection error (possibly Tor-related): {error_msg}")
             raise HTTPException(status_code=503, detail=f"Connection error: {error_msg}")
+        if "IpBlocked" in error_msg or "429" in error_msg:
+            print(f"[YT-LIST] IP blocked by YouTube: {error_msg}")
+            raise HTTPException(status_code=429, detail="YouTube has blocked this IP. Try requesting a new Tor identity via POST /tor/new-identity")
         print(f"[YT-LIST] Error: {error_msg}")
         raise HTTPException(status_code=404, detail=error_msg)
 
