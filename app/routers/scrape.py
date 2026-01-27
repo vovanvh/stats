@@ -6,7 +6,7 @@ import base64
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from readability import Document
 from lxml import html as lxml_html
-from app.config import settings
+from app.proxy import get_playwright_proxy, get_proxy
 
 router = APIRouter(tags=["scraping"])
 
@@ -87,13 +87,15 @@ async def scrape_website(
     url: str = Query(..., description="Target URL to scrape"),
     waitForSelector: Optional[str] = Query(None, description="CSS selector to wait for before scraping"),
     timeout: Optional[int] = Query(30000, description="Max wait time in milliseconds"),
-    screenshot: Optional[bool] = Query(False, description="Return base64 PNG screenshot")
+    screenshot: Optional[bool] = Query(False, description="Return base64 PNG screenshot"),
+    isFree: Optional[bool] = Query(False, description="Use free Tor proxy instead of paid residential proxy")
 ):
     """
     Scrape a website with JavaScript rendering support via Playwright.
 
-    Uses Tor proxy if USE_TOR_PROXY is enabled.
-    Waits for JavaScript to finish loading (networkidle) by default.
+    Uses proxy based on isFree parameter:
+    - isFree=true: Uses Tor SOCKS5 proxy (free but slower)
+    - isFree=false: Uses paid residential proxy (faster, better success rate)
     """
     start_time = time.time()
 
@@ -103,11 +105,10 @@ async def scrape_website(
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
 
+    proxy_config = get_proxy(is_free=isFree)
     print(f"[SCRAPE] Starting scrape for: {url}")
-    print(f"[SCRAPE] Options: waitForSelector={waitForSelector}, timeout={timeout}, screenshot={screenshot}")
-
-    if settings.USE_TOR_PROXY:
-        print(f"[SCRAPE] Using Tor proxy: {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}")
+    print(f"[SCRAPE] Options: waitForSelector={waitForSelector}, timeout={timeout}, screenshot={screenshot}, isFree={isFree}")
+    print(f"[SCRAPE] Using proxy: {proxy_config.provider}")
 
     browser = None
     playwright = None
@@ -116,12 +117,8 @@ async def scrape_website(
 
         launch_options = {
             "headless": True,
+            "proxy": get_playwright_proxy(is_free=isFree)
         }
-
-        if settings.USE_TOR_PROXY:
-            launch_options["proxy"] = {
-                "server": f"socks5://{settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}"
-            }
 
         browser = await playwright.chromium.launch(**launch_options)
         context = await browser.new_context(
@@ -183,10 +180,10 @@ async def scrape_website(
         error_msg = str(e)
         print(f"[SCRAPE] Error: {error_msg}")
 
-        if "net::ERR_PROXY_CONNECTION_FAILED" in error_msg or "SOCKS" in error_msg:
+        if "net::ERR_PROXY_CONNECTION_FAILED" in error_msg or "SOCKS" in error_msg or "proxy" in error_msg.lower():
             raise HTTPException(
                 status_code=503,
-                detail=f"Tor proxy connection failed. Ensure Tor is running at {settings.TOR_PROXY_HOST}:{settings.TOR_PROXY_PORT}"
+                detail=f"Proxy connection failed ({proxy_config.provider}). Check proxy configuration."
             )
 
         raise HTTPException(status_code=500, detail=f"Scraping error: {error_msg}")
