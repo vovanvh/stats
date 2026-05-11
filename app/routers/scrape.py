@@ -6,7 +6,7 @@ import base64
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
 from readability import Document
 from lxml import html as lxml_html
-from app.proxy import get_playwright_proxy, get_proxy
+from app.proxy import get_playwright_proxy
 
 router = APIRouter(tags=["scraping"])
 
@@ -105,19 +105,20 @@ async def scrape_website(
     if not url.startswith(('http://', 'https://')):
         url = 'https://' + url
 
-    proxy_config = get_proxy(is_free=isFree)
     print(f"[SCRAPE] Starting scrape for: {url}")
     print(f"[SCRAPE] Options: waitForSelector={waitForSelector}, timeout={timeout}, screenshot={screenshot}, isFree={isFree}")
-    print(f"[SCRAPE] Using proxy: {proxy_config.provider}")
 
     browser = None
     playwright = None
     try:
+        playwright_proxy = get_playwright_proxy(is_free=isFree)
+        print(f"[SCRAPE] Using proxy: {playwright_proxy['server']}")
+
         playwright = await async_playwright().start()
 
         launch_options = {
             "headless": True,
-            "proxy": get_playwright_proxy(is_free=isFree)
+            "proxy": playwright_proxy,
         }
 
         browser = await playwright.chromium.launch(**launch_options)
@@ -141,6 +142,7 @@ async def scrape_website(
 
         text_content = await page.evaluate("""
             () => {
+                if (!document.body) return '';
                 const scripts = document.querySelectorAll('script, style, noscript');
                 scripts.forEach(el => el.remove());
                 return document.body.innerText || document.body.textContent || '';
@@ -183,7 +185,7 @@ async def scrape_website(
         if "net::ERR_PROXY_CONNECTION_FAILED" in error_msg or "SOCKS" in error_msg or "proxy" in error_msg.lower():
             raise HTTPException(
                 status_code=503,
-                detail=f"Proxy connection failed ({proxy_config.provider}). Check proxy configuration."
+                detail=f"Proxy connection failed ({playwright_proxy['server']}). Check proxy configuration."
             )
 
         raise HTTPException(status_code=500, detail=f"Scraping error: {error_msg}")

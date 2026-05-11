@@ -15,6 +15,11 @@ class ProxyConfig:
     https_url: str
     provider: str
     session_id: str = ""
+    # Raw credentials for Playwright (which ignores inline URL auth)
+    username: str = ""
+    password: str = ""
+    host: str = ""
+    port: int = 0
 
 
 def get_session_id() -> str:
@@ -108,12 +113,21 @@ def get_paid_proxy() -> ProxyConfig:
 
     username, password, host, port = _build_proxy_url(provider, session_id)
 
-    # URL-encode username and password to handle special characters
+    # URL-encode credentials for use in http_url (e.g. requests library)
     encoded_user = quote(username, safe='')
     encoded_pass = quote(password, safe='')
 
     url = f"http://{encoded_user}:{encoded_pass}@{host}:{port}"
-    return ProxyConfig(http_url=url, https_url=url, provider=provider, session_id=session_id)
+    return ProxyConfig(
+        http_url=url,
+        https_url=url,
+        provider=provider,
+        session_id=session_id,
+        username=username,
+        password=password,
+        host=host,
+        port=int(port),
+    )
 
 
 def get_proxy(is_free: bool = False) -> ProxyConfig:
@@ -134,12 +148,23 @@ def get_proxy(is_free: bool = False) -> ProxyConfig:
 def get_playwright_proxy(is_free: bool = False) -> dict:
     """
     Get proxy configuration formatted for Playwright.
+    Playwright ignores credentials embedded in the server URL, so they must be
+    passed as separate username/password fields.
 
     Args:
         is_free: If True, use Tor (free). If False, use paid residential proxy.
 
     Returns:
-        Dict with 'server' key for Playwright launch options
+        Dict with server/username/password keys for Playwright launch options
     """
     proxy_config = get_proxy(is_free)
-    return {"server": proxy_config.http_url}
+
+    # Tor has no credentials
+    if is_free:
+        return {"server": proxy_config.http_url}
+
+    return {
+        "server": f"http://{proxy_config.host}:{proxy_config.port}",
+        "username": proxy_config.username,
+        "password": proxy_config.password,
+    }
