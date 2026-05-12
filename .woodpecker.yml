@@ -1,0 +1,49 @@
+steps:
+  - name: build-and-push
+    image: docker
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock
+    commands:
+      - DOCKER_BUILDKIT=0 docker build -f docker/python/prod/Dockerfile -t localhost:54321/krys-stats:latest .
+      - docker push localhost:54321/krys-stats:latest
+    when:
+      branch: master
+      event: [push, manual]
+      path:
+        exclude:
+          - 'docs/**'
+          - '**.md'
+          - '**.txt'
+          - '.gitignore'
+          - '.woodpecker.yml'
+
+  - name: deploy
+    image: alpine
+    environment:
+      ENV_FILE_PROD:
+        from_secret: ENV_FILE_PROD
+      SSH_PRIVATE_KEY:
+        from_secret: SSH_PRIVATE_KEY
+    commands:
+      - apk add --no-cache openssh-client
+      - mkdir -p ~/.ssh
+      - echo "$SSH_PRIVATE_KEY" | base64 -d > ~/.ssh/id_rsa
+      - chmod 600 ~/.ssh/id_rsa
+      - ssh-keyscan -H 31.220.75.93 >> ~/.ssh/known_hosts
+      - printf '%s' "$ENV_FILE_PROD" | base64 -d | sed 's/[[:space:]]*=[[:space:]]*/=/g; s/=["'\'']\(.*\)["'\'']$/=\1/' > /tmp/.env.prod
+      - ssh dev@31.220.75.93 "mkdir -p ~/stats"
+      - scp /tmp/.env.prod dev@31.220.75.93:~/stats/.env.prod
+      - scp scripts/deploy.sh dev@31.220.75.93:/tmp/deploy-stats.sh
+      - ssh dev@31.220.75.93 "sh /tmp/deploy-stats.sh && rm /tmp/deploy-stats.sh"
+    depends_on:
+      - build-and-push
+    when:
+      branch: master
+      event: [push, manual]
+      path:
+        exclude:
+          - 'docs/**'
+          - '**.md'
+          - '**.txt'
+          - '.gitignore'
+          - '.woodpecker.yml'
