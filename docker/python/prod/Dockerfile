@@ -37,7 +37,8 @@ RUN addgroup --system app && adduser --system --group app
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app \
-    PATH="/home/app/.local/bin:$PATH"
+    PATH="/home/app/.local/bin:$PATH" \
+    PLAYWRIGHT_BROWSERS_PATH=/ms-playwright
 
 # Install system dependencies
 RUN apt-get update \
@@ -51,9 +52,10 @@ RUN apt-get update \
 COPY --from=builder /app/wheels /wheels
 RUN pip install --no-cache /wheels/*
 
-# Install Playwright dependencies and browser
+# Install Playwright dependencies and browser to a fixed path readable by app user
 RUN playwright install-deps chromium \
-    && playwright install chromium
+    && playwright install chromium \
+    && chmod -R 755 /ms-playwright
 
 # Copy project files
 COPY --chown=app:app . .
