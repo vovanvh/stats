@@ -7,7 +7,7 @@ steps:
       - DOCKER_BUILDKIT=0 docker build -f docker/python/prod/Dockerfile -t localhost:54321/krys-stats:latest .
       - docker push localhost:54321/krys-stats:latest
     when:
-      branch: master
+      branch: main
       event: [push, manual]
       path:
         exclude:
@@ -38,7 +38,7 @@ steps:
     depends_on:
       - build-and-push
     when:
-      branch: master
+      branch: main
       event: [push, manual]
       path:
         exclude:

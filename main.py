@@ -15,7 +15,7 @@ class SlashInsensitiveAPIRoute(APIRoute):
 
 
 app = FastAPI(route_class=SlashInsensitiveAPIRoute)
-#
+
 # Include routers
 app.include_router(stats.router)
 app.include_router(youtube.router)
