@@ -1,15 +1,15 @@
 services:
-  tor:
-    image: osminogin/tor-simple:latest
-    container_name: tor-proxy
-    restart: always
-    #ports:
-    #  - "127.0.0.1:9050:9050"
-    #  - "127.0.0.1:9051:9051"
-    volumes:
-      - ./torrc:/etc/tor/torrc:ro
-    networks:
-      - devnetwork
+  #tor:
+  #  image: osminogin/tor-simple:latest
+  #  container_name: tor-proxy
+  #  restart: always
+  #  ports:
+  #    - "127.0.0.1:9050:9050"
+  #    - "127.0.0.1:9051:9051"
+  #  volumes:
+  #    - ./torrc:/etc/tor/torrc:ro
+  #  networks:
+  #    - devnetwork
 
   server:
     image: vovanvh/voca:stats-dev
