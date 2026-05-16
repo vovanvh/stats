@@ -5,6 +5,7 @@ import asyncio
 import time
 import base64
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
+from playwright_stealth import Stealth
 from readability import Document
 from lxml import html as lxml_html
 from app.proxy import get_playwright_proxy
@@ -130,10 +131,10 @@ async def scrape_website(
             }
 
             browser = await playwright.chromium.launch(**launch_options)
-            context = await browser.new_context(
-                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-            )
+            context = await browser.new_context()
             page = await context.new_page()
+            # Patch automation signals (navigator.webdriver, plugins, UA data, etc.)
+            await Stealth().apply_stealth_async(page)
 
             print(f"[SCRAPE] Navigating to {url}")
             # Use "load" first for reliability; then attempt networkidle with a short grace period

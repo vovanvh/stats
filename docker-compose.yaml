@@ -34,8 +34,8 @@ services:
       - .:/app
       - /app/env
       - /app/venv
-    depends_on:
-      - tor
+    #depends_on:
+    #  - tor
     networks:
       - devnetwork
 networks:
