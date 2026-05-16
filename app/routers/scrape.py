@@ -1,6 +1,7 @@
 from typing import Optional
 from pydantic import BaseModel
 from fastapi import APIRouter, HTTPException, Query
+import asyncio
 import time
 import base64
 from playwright.async_api import async_playwright, TimeoutError as PlaywrightTimeout
@@ -9,6 +10,9 @@ from lxml import html as lxml_html
 from app.proxy import get_playwright_proxy
 
 router = APIRouter(tags=["scraping"])
+
+# Cap concurrent Chromium instances to prevent resource exhaustion under burst traffic
+_browser_semaphore = asyncio.Semaphore(3)
 
 
 class ScrapeMetadata(BaseModel):
@@ -108,89 +112,101 @@ async def scrape_website(
     print(f"[SCRAPE] Starting scrape for: {url}")
     print(f"[SCRAPE] Options: waitForSelector={waitForSelector}, timeout={timeout}, screenshot={screenshot}, isFree={isFree}")
 
-    browser = None
-    playwright = None
-    try:
-        playwright_proxy = get_playwright_proxy(is_free=isFree)
-        print(f"[SCRAPE] Using proxy: {playwright_proxy['server']}")
+    # Queue requests when browser limit is reached to prevent resource exhaustion
+    async with _browser_semaphore:
+        browser = None
+        playwright = None
+        context = None
+        playwright_proxy = None
+        try:
+            playwright_proxy = get_playwright_proxy(is_free=isFree)
+            print(f"[SCRAPE] Using proxy: {playwright_proxy['server']}")
 
-        playwright = await async_playwright().start()
+            playwright = await async_playwright().start()
 
-        launch_options = {
-            "headless": True,
-            "proxy": playwright_proxy,
-        }
-
-        browser = await playwright.chromium.launch(**launch_options)
-        context = await browser.new_context(
-            user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
-        )
-        page = await context.new_page()
-
-        print(f"[SCRAPE] Navigating to {url}")
-        await page.goto(url, wait_until="networkidle", timeout=timeout)
-
-        if waitForSelector:
-            print(f"[SCRAPE] Waiting for selector: {waitForSelector}")
-            await page.wait_for_selector(waitForSelector, timeout=timeout)
-
-        final_url = page.url
-        print(f"[SCRAPE] Final URL: {final_url}")
-
-        title = await page.title()
-        html_content = await page.content()
-
-        text_content = await page.evaluate("""
-            () => {
-                if (!document.body) return '';
-                const scripts = document.querySelectorAll('script, style, noscript');
-                scripts.forEach(el => el.remove());
-                return document.body.innerText || document.body.textContent || '';
+            launch_options = {
+                "headless": True,
+                "proxy": playwright_proxy,
             }
-        """)
 
-        metadata = extract_metadata_from_html(html_content)
-        main_content = extract_main_content(html_content)
+            browser = await playwright.chromium.launch(**launch_options)
+            context = await browser.new_context(
+                user_agent="Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+            )
+            page = await context.new_page()
 
-        screenshot_base64 = None
-        if screenshot:
-            print("[SCRAPE] Taking screenshot")
-            screenshot_bytes = await page.screenshot(full_page=True)
-            screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+            print(f"[SCRAPE] Navigating to {url}")
+            # Use "load" first for reliability; then attempt networkidle with a short grace period
+            await page.goto(url, wait_until="load", timeout=timeout)
+            try:
+                await page.wait_for_load_state("networkidle", timeout=5000)
+            except PlaywrightTimeout:
+                pass  # networkidle not reached within grace period, proceed with loaded DOM
 
-        total_ms = int((time.time() - start_time) * 1000)
-        print(f"[SCRAPE] Completed in {total_ms}ms")
+            if waitForSelector:
+                print(f"[SCRAPE] Waiting for selector: {waitForSelector}")
+                await page.wait_for_selector(waitForSelector, timeout=timeout)
 
-        return ScrapeResponse(
-            url=final_url,
-            title=title or "",
-            html=html_content,
-            textContent=text_content,
-            mainContent=main_content,
-            metadata=metadata,
-            screenshot=screenshot_base64,
-            timing=ScrapeTiming(total_ms=total_ms)
-        )
+            final_url = page.url
+            print(f"[SCRAPE] Final URL: {final_url}")
 
-    except PlaywrightTimeout as e:
-        print(f"[SCRAPE] Timeout error: {e}")
-        raise HTTPException(
-            status_code=504,
-            detail=f"Page load timeout after {timeout}ms. Try increasing timeout or check if the URL is accessible."
-        )
-    except Exception as e:
-        error_msg = str(e)
-        print(f"[SCRAPE] Error: {error_msg}")
+            title = await page.title()
+            html_content = await page.content()
 
-        if "net::ERR_PROXY_CONNECTION_FAILED" in error_msg or "SOCKS" in error_msg or "proxy" in error_msg.lower():
-            raise HTTPException(
-                status_code=503,
-                detail=f"Proxy connection failed ({playwright_proxy['server']}). Check proxy configuration."
+            text_content = await page.evaluate("""
+                () => {
+                    if (!document.body) return '';
+                    const scripts = document.querySelectorAll('script, style, noscript');
+                    scripts.forEach(el => el.remove());
+                    return document.body.innerText || document.body.textContent || '';
+                }
+            """)
+
+            metadata = extract_metadata_from_html(html_content)
+            main_content = extract_main_content(html_content)
+
+            screenshot_base64 = None
+            if screenshot:
+                print("[SCRAPE] Taking screenshot")
+                screenshot_bytes = await page.screenshot(full_page=True)
+                screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+
+            total_ms = int((time.time() - start_time) * 1000)
+            print(f"[SCRAPE] Completed in {total_ms}ms")
+
+            return ScrapeResponse(
+                url=final_url,
+                title=title or "",
+                html=html_content,
+                textContent=text_content,
+                mainContent=main_content,
+                metadata=metadata,
+                screenshot=screenshot_base64,
+                timing=ScrapeTiming(total_ms=total_ms)
             )
 
-        raise HTTPException(status_code=500, detail=f"Scraping error: {error_msg}")
-    finally:
-        if browser:
-            await browser.close()
-        if playwright:
-            await playwright.stop()
+        except PlaywrightTimeout as e:
+            print(f"[SCRAPE] Timeout error: {e}")
+            raise HTTPException(
+                status_code=504,
+                detail=f"Page load timeout after {timeout}ms. Try increasing timeout or check if the URL is accessible."
+            )
+        except Exception as e:
+            error_msg = str(e)
+            print(f"[SCRAPE] Error: {error_msg}")
+
+            proxy_server = playwright_proxy['server'] if playwright_proxy else 'unknown'
+            if "net::ERR_PROXY_CONNECTION_FAILED" in error_msg or "SOCKS" in error_msg or "proxy" in error_msg.lower():
+                raise HTTPException(
+                    status_code=503,
+                    detail=f"Proxy connection failed ({proxy_server}). Check proxy configuration."
+                )
+
+            raise HTTPException(status_code=500, detail=f"Scraping error: {error_msg}")
+        finally:
+            if context:
+                await context.close()
+            if browser:
+                await browser.close()
+            if playwright:
+                await playwright.stop()
