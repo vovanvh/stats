@@ -28,13 +28,27 @@ JavaScript automation signals that Cloudflare and similar WAFs fingerprint — `
 reliably blocked by Cloudflare-protected sites.
 
 Concurrency is capped at 3 simultaneous Chromium instances via an `asyncio.Semaphore` to prevent resource
-exhaustion under burst traffic. Each request creates and fully tears down its own browser → context → page chain.
-Navigation uses a two-phase strategy: wait for the `load` event first (reliable), then attempt `networkidle`
-with a 5-second grace period to let late-loading JS settle without hard-failing on sites with persistent
-third-party network activity. An optional `waitForSelector` parameter allows callers to wait for a specific
-DOM element before extraction.
+exhaustion under burst traffic. Each attempt creates and fully tears down its own browser → context → page chain.
+Navigation uses a three-phase strategy: commit on `domcontentloaded` (which fires reliably even when a
+sub-resource — ad/tracker/long-poll — hangs and `load` never does), then wait up to `_LOAD_STATE_BUDGET_MS`
+(10s) for a full `load` non-fatally, then attempt `networkidle` with a 5-second grace period to let late
+client-side JS settle (important for SPAs). Only the `domcontentloaded` commit uses the request `timeout`
+and can fail the attempt; the `load` and `networkidle` waits never hard-fail. This replaced an earlier
+`wait_until="load"` strategy that hung for the full timeout on sites whose `load` event never fires.
+An optional `waitForSelector` parameter allows callers to wait for a specific DOM element before extraction.
 
-Main files: @app/routers/scrape.py
+To absorb flaky residential exit IPs, a single request now retries up to `_MAX_SCRAPE_ATTEMPTS` (3) times.
+A single attempt is isolated in `_perform_scrape_attempt`, which owns its full browser lifecycle and lets
+`PlaywrightTimeout` / proxy-connection errors propagate. The endpoint loops over attempts and, before each
+retry (paid proxy only), calls `rotate_session()` to generate a new session ID so the next attempt resolves
+a fresh exit IP via `get_playwright_proxy`. This moves retry logic server-side so callers issue a single
+request instead of retrying themselves against the same stuck IP. Timeouts and proxy errors are retryable;
+any other exception fails fast with 500. Once all attempts are exhausted the endpoint returns 504 (all
+timed out) or 503 (all proxy failures). Note the worst-case latency is `_MAX_SCRAPE_ATTEMPTS × timeout`
+(up to ~90s with the 30000ms default), and because the session ID is global, rotation during one request
+also changes the exit IP for concurrent requests.
+
+Main files: @app/routers/scrape.py, @app/proxy.py
 
 ---
 

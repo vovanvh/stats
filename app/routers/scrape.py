@@ -8,12 +8,18 @@ from playwright.async_api import async_playwright, TimeoutError as PlaywrightTim
 from playwright_stealth import Stealth
 from readability import Document
 from lxml import html as lxml_html
-from app.proxy import get_playwright_proxy
+from app.proxy import get_playwright_proxy, rotate_session
 
 router = APIRouter(tags=["scraping"])
 
 # Cap concurrent Chromium instances to prevent resource exhaustion under burst traffic
 _browser_semaphore = asyncio.Semaphore(3)
+
+# Total navigation attempts before giving up; retries rotate the proxy exit IP between tries
+_MAX_SCRAPE_ATTEMPTS = 3
+
+# After the DOM is parsed, wait this long (ms) for a full "load" before proceeding with the DOM as-is
+_LOAD_STATE_BUDGET_MS = 10000
 
 
 class ScrapeMetadata(BaseModel):
@@ -87,6 +93,108 @@ def extract_main_content(html_content: str) -> Optional[str]:
         return None
 
 
+async def _perform_scrape_attempt(
+    url: str,
+    waitForSelector: Optional[str],
+    timeout: int,
+    screenshot: bool,
+    isFree: bool,
+    start_time: float,
+    attempt: int,
+) -> ScrapeResponse:
+    """
+    Run a single scrape attempt with its own browser → context → page lifecycle.
+
+    Builds the proxy from the current session ID (rotated by the caller between retries),
+    navigates, extracts the page data, and tears everything down in the finally block.
+    Raises PlaywrightTimeout or proxy errors so the caller's retry loop can react.
+    """
+    browser = None
+    playwright = None
+    context = None
+    try:
+        # Resolve proxy fresh each attempt so a rotated session ID takes effect
+        playwright_proxy = get_playwright_proxy(is_free=isFree)
+        print(f"[SCRAPE] Attempt {attempt}/{_MAX_SCRAPE_ATTEMPTS} using proxy: {playwright_proxy['server']}")
+
+        playwright = await async_playwright().start()
+
+        launch_options = {
+            "headless": True,
+            "proxy": playwright_proxy,
+        }
+
+        browser = await playwright.chromium.launch(**launch_options)
+        context = await browser.new_context()
+        page = await context.new_page()
+        # Patch automation signals (navigator.webdriver, plugins, UA data, etc.)
+        await Stealth().apply_stealth_async(page)
+
+        print(f"[SCRAPE] Navigating to {url}")
+        # Commit on domcontentloaded (fires reliably even when a sub-resource hangs and "load" never does)
+        await page.goto(url, wait_until="domcontentloaded", timeout=timeout)
+        # Prefer a full load, but don't fail if it never fires (hanging trackers/ads/long-polls)
+        try:
+            await page.wait_for_load_state("load", timeout=_LOAD_STATE_BUDGET_MS)
+        except PlaywrightTimeout:
+            pass  # "load" not reached within budget, proceed with the parsed DOM
+        # Let late client-side JS settle (key for SPAs); non-fatal on sites with persistent network activity
+        try:
+            await page.wait_for_load_state("networkidle", timeout=5000)
+        except PlaywrightTimeout:
+            pass  # networkidle not reached within grace period, proceed with loaded DOM
+
+        if waitForSelector:
+            print(f"[SCRAPE] Waiting for selector: {waitForSelector}")
+            await page.wait_for_selector(waitForSelector, timeout=timeout)
+
+        final_url = page.url
+        print(f"[SCRAPE] Final URL: {final_url}")
+
+        title = await page.title()
+        html_content = await page.content()
+
+        text_content = await page.evaluate("""
+            () => {
+                if (!document.body) return '';
+                const scripts = document.querySelectorAll('script, style, noscript');
+                scripts.forEach(el => el.remove());
+                return document.body.innerText || document.body.textContent || '';
+            }
+        """)
+
+        metadata = extract_metadata_from_html(html_content)
+        main_content = extract_main_content(html_content)
+
+        screenshot_base64 = None
+        if screenshot:
+            print("[SCRAPE] Taking screenshot")
+            screenshot_bytes = await page.screenshot(full_page=True)
+            screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
+
+        total_ms = int((time.time() - start_time) * 1000)
+        print(f"[SCRAPE] Completed in {total_ms}ms on attempt {attempt}")
+
+        return ScrapeResponse(
+            url=final_url,
+            title=title or "",
+            html=html_content,
+            textContent=text_content,
+            mainContent=main_content,
+            metadata=metadata,
+            screenshot=screenshot_base64,
+            timing=ScrapeTiming(total_ms=total_ms)
+        )
+    finally:
+        # Always tear down this attempt's browser stack before retrying or returning
+        if context:
+            await context.close()
+        if browser:
+            await browser.close()
+        if playwright:
+            await playwright.stop()
+
+
 @router.get("/scrape", response_model=ScrapeResponse)
 async def scrape_website(
     url: str = Query(..., description="Target URL to scrape"),
@@ -97,6 +205,9 @@ async def scrape_website(
 ):
     """
     Scrape a website with JavaScript rendering support via Playwright.
+
+    Retries up to _MAX_SCRAPE_ATTEMPTS times, rotating the residential proxy exit IP
+    between tries, so a single slow/stuck IP no longer fails the whole request.
 
     Uses proxy based on isFree parameter:
     - isFree=true: Uses Tor SOCKS5 proxy (free but slower)
@@ -115,99 +226,56 @@ async def scrape_website(
 
     # Queue requests when browser limit is reached to prevent resource exhaustion
     async with _browser_semaphore:
-        browser = None
-        playwright = None
-        context = None
-        playwright_proxy = None
-        try:
-            playwright_proxy = get_playwright_proxy(is_free=isFree)
-            print(f"[SCRAPE] Using proxy: {playwright_proxy['server']}")
+        last_exc: Optional[Exception] = None
 
-            playwright = await async_playwright().start()
+        # Retry only for paid proxy (we can rotate its exit IP here). For Tor, do a single
+        # attempt: its rotation happens via /tor/new-identity, coordinated by the caller.
+        max_attempts = 1 if isFree else _MAX_SCRAPE_ATTEMPTS
 
-            launch_options = {
-                "headless": True,
-                "proxy": playwright_proxy,
-            }
+        for attempt in range(1, max_attempts + 1):
+            # On retries, rotate to a fresh residential exit IP (paid proxy only; Tor rotates via its control port)
+            if attempt > 1 and not isFree:
+                new_session = rotate_session()
+                print(f"[SCRAPE] Rotated proxy session to {new_session} before attempt {attempt}")
 
-            browser = await playwright.chromium.launch(**launch_options)
-            context = await browser.new_context()
-            page = await context.new_page()
-            # Patch automation signals (navigator.webdriver, plugins, UA data, etc.)
-            await Stealth().apply_stealth_async(page)
-
-            print(f"[SCRAPE] Navigating to {url}")
-            # Use "load" first for reliability; then attempt networkidle with a short grace period
-            await page.goto(url, wait_until="load", timeout=timeout)
             try:
-                await page.wait_for_load_state("networkidle", timeout=5000)
-            except PlaywrightTimeout:
-                pass  # networkidle not reached within grace period, proceed with loaded DOM
+                return await _perform_scrape_attempt(
+                    url=url,
+                    waitForSelector=waitForSelector,
+                    timeout=timeout,
+                    screenshot=screenshot,
+                    isFree=isFree,
+                    start_time=start_time,
+                    attempt=attempt,
+                )
+            except PlaywrightTimeout as e:
+                # Timeouts are retryable: a different exit IP may load the page in time
+                last_exc = e
+                print(f"[SCRAPE] Attempt {attempt}/{_MAX_SCRAPE_ATTEMPTS} timed out")
+            except Exception as e:
+                error_msg = str(e)
+                is_proxy_error = (
+                    "net::ERR_PROXY_CONNECTION_FAILED" in error_msg
+                    or "SOCKS" in error_msg
+                    or "proxy" in error_msg.lower()
+                )
+                # Proxy connection failures are retryable; anything else fails fast
+                if is_proxy_error:
+                    last_exc = e
+                    print(f"[SCRAPE] Attempt {attempt}/{_MAX_SCRAPE_ATTEMPTS} proxy error: {error_msg}")
+                else:
+                    print(f"[SCRAPE] Non-retryable error: {error_msg}")
+                    raise HTTPException(status_code=500, detail=f"Scraping error: {error_msg}")
 
-            if waitForSelector:
-                print(f"[SCRAPE] Waiting for selector: {waitForSelector}")
-                await page.wait_for_selector(waitForSelector, timeout=timeout)
-
-            final_url = page.url
-            print(f"[SCRAPE] Final URL: {final_url}")
-
-            title = await page.title()
-            html_content = await page.content()
-
-            text_content = await page.evaluate("""
-                () => {
-                    if (!document.body) return '';
-                    const scripts = document.querySelectorAll('script, style, noscript');
-                    scripts.forEach(el => el.remove());
-                    return document.body.innerText || document.body.textContent || '';
-                }
-            """)
-
-            metadata = extract_metadata_from_html(html_content)
-            main_content = extract_main_content(html_content)
-
-            screenshot_base64 = None
-            if screenshot:
-                print("[SCRAPE] Taking screenshot")
-                screenshot_bytes = await page.screenshot(full_page=True)
-                screenshot_base64 = base64.b64encode(screenshot_bytes).decode('utf-8')
-
-            total_ms = int((time.time() - start_time) * 1000)
-            print(f"[SCRAPE] Completed in {total_ms}ms")
-
-            return ScrapeResponse(
-                url=final_url,
-                title=title or "",
-                html=html_content,
-                textContent=text_content,
-                mainContent=main_content,
-                metadata=metadata,
-                screenshot=screenshot_base64,
-                timing=ScrapeTiming(total_ms=total_ms)
-            )
-
-        except PlaywrightTimeout as e:
-            print(f"[SCRAPE] Timeout error: {e}")
+        # All attempts exhausted - surface the appropriate final error
+        if isinstance(last_exc, PlaywrightTimeout):
+            print(f"[SCRAPE] Giving up after {max_attempts} timed-out attempt(s)")
             raise HTTPException(
                 status_code=504,
-                detail=f"Page load timeout after {timeout}ms. Try increasing timeout or check if the URL is accessible."
+                detail=f"Page load timeout after {max_attempts} attempt(s) ({timeout}ms each). Try increasing timeout or check if the URL is accessible."
             )
-        except Exception as e:
-            error_msg = str(e)
-            print(f"[SCRAPE] Error: {error_msg}")
-
-            proxy_server = playwright_proxy['server'] if playwright_proxy else 'unknown'
-            if "net::ERR_PROXY_CONNECTION_FAILED" in error_msg or "SOCKS" in error_msg or "proxy" in error_msg.lower():
-                raise HTTPException(
-                    status_code=503,
-                    detail=f"Proxy connection failed ({proxy_server}). Check proxy configuration."
-                )
-
-            raise HTTPException(status_code=500, detail=f"Scraping error: {error_msg}")
-        finally:
-            if context:
-                await context.close()
-            if browser:
-                await browser.close()
-            if playwright:
-                await playwright.stop()
+        print(f"[SCRAPE] Giving up after {max_attempts} proxy failure(s)")
+        raise HTTPException(
+            status_code=503,
+            detail=f"Proxy connection failed after {max_attempts} attempt(s). Check proxy configuration."
+        )
