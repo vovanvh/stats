@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+- `POST /stats/` accepts rows of any table (`data: List[Dict[str, Any]]`); `LikeDislikeStats` rows were rejected with 422 before (VBM-242).
+
+### Changed
+- `POST /stats/` validates `table` and every column key as a bare identifier (422) and returns 500 with the ClickHouse error detail when the insert fails.
+
+### Added
+- `tests/test_stats.py` and `httpx` in `requirements-dev.txt`.
+
 ## [2.0.0] - 2026-01-16
 
 ### Major: Tor Proxy Upgrade and SOCKS5 Protocol Fix

@@ -73,13 +73,17 @@ Main files: @app/routers/youtube.py
 
 ### 3. Statistics Ingestion into ClickHouse
 
-A single `POST /stats/` endpoint that bulk-inserts vocabulary learning stat records into a ClickHouse table.
-The request body carries the target table name and a list of stat items, each representing one word's spaced
-repetition state: language pair, word ID, external ID, SM-2 interval and repetition count, last result,
-and timestamps for when the record was added, last updated, and when the next review is due.
+A single `POST /stats/` endpoint that bulk-inserts rows into any ClickHouse table. The request body carries the
+target `table` and `data`, a non-empty list of plain row objects (`List[Dict[str, Any]]`), so one path serves
+`vocabularySR` (spaced-repetition state), `LikeDislikeStats` (`{id, module, type, value}`) and any future table.
 
-Column ordering for the ClickHouse insert is derived dynamically from the union of all keys present in the
-payload, so the endpoint is tolerant of sparse records where some fields may be absent.
+The table name (stripped) and every column key must match `IDENTIFIER_PATTERN` (`^[A-Za-z_][A-Za-z0-9_]*$`);
+otherwise the request is rejected with 422. Column ordering is the sorted union of all row keys; a key missing
+from a row is sent as `None`. A failed ClickHouse insert returns 500 with
+`detail: "ClickHouse insert into '<table>' failed: <reason>"`.
+
+Tests: `tests/test_stats.py` (router-only app, stubbed ClickHouse client) — run with
+`docker run --rm -v "$PWD":/app -w /app vovanvh/voca:stats-dev sh -c 'pip install -q httpx pytest && python -m pytest -q tests'`.
 
 Main files: @app/routers/stats.py, @app/database.py
 
