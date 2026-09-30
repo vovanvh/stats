@@ -262,36 +262,30 @@ GET /test-tor
 ```
 POST /stats/
 ```
-**Purpose**: Store statistics data in ClickHouse
+**Purpose**: Store rows of any table in ClickHouse (generic "table + rows" writer)
 
 **Request Body**:
 ```json
 {
-  "table": "statistics_table_name",
+  "table": "LikeDislikeStats",
   "data": [
-    {
-      "language": 1,
-      "translationLanguage": 2,
-      "wordId": 12345,
-      "externalId": 67890,
-      "interval": 3,
-      "repetitions": 5,
-      "lastRes": 4,
-      "timestampAdded": 1234567890,
-      "timestampUpdated": 1234567900,
-      "nextStartTS": 1234567910,
-      "type": 1
-    }
+    { "id": 12345, "module": "translator", "type": 0, "value": 1 }
   ]
 }
 ```
+`data` is a non-empty list of plain objects; `vocabularySR` rows (`language`, `translationLanguage`, `wordId`,
+`externalId`, `interval`, `repetitions`, `lastRes`, `timestampAdded`, `timestampUpdated`, `nextStartTS`,
+`type`) go through the same path.
 
 **Logic**:
-1. Validates incoming data using Pydantic models
-2. Converts Pydantic models to dictionaries
-3. Extracts column names and data using `extract_columns_and_data()`
-4. Inserts data into ClickHouse table
-5. Returns success status
+1. Validates `table` (stripped, must match `^[A-Za-z_][A-Za-z0-9_]*$`) and every column key with the same pattern
+2. Extracts sorted column names and row values using `extract_columns_and_data()` (missing keys → `None`)
+3. Inserts data into the ClickHouse table
+4. Returns success status
+
+**Errors**:
+- `422` — missing/empty/invalid table name, empty `data`, or an invalid column key
+- `500` — ClickHouse insert failed; body `{"detail": "ClickHouse insert into '<table>' failed: <reason>"}`
 
 **Response**:
 ```json
@@ -564,13 +558,13 @@ Client Request
     ↓
 POST /stats/
     ↓
-Validate with StatData model
+Validate with StatData model (table + column identifiers; 422 on failure)
     ↓
 Extract columns and data
     ↓
 Get ClickHouse client
     ↓
-Insert into table
+Insert into table (500 with ClickHouse detail on failure)
     ↓
 Return success response
 ```
@@ -1082,20 +1076,8 @@ curl -X POST http://localhost:8000/tor/new-identity
 curl -X POST http://localhost:8000/stats/ \
   -H "Content-Type: application/json" \
   -d '{
-    "table": "word_statistics",
-    "data": [{
-      "language": 1,
-      "translationLanguage": 2,
-      "wordId": 12345,
-      "externalId": 67890,
-      "interval": 3,
-      "repetitions": 5,
-      "lastRes": 4,
-      "timestampAdded": 1634567890,
-      "timestampUpdated": 1634567900,
-      "nextStartTS": 1634567910,
-      "type": 1
-    }]
+    "table": "LikeDislikeStats",
+    "data": [{ "id": 12345, "module": "translator", "type": 0, "value": 1 }]
   }'
 ```
 
