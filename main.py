@@ -1,7 +1,7 @@
 from fastapi import FastAPI, Request
 from fastapi.routing import APIRoute
 
-from app.routers import stats, youtube, scrape, tor
+from app.routers import stats, youtube, scrape, tor, activity_summary
 
 
 class SlashInsensitiveAPIRoute(APIRoute):
@@ -21,6 +21,7 @@ app.include_router(stats.router)
 app.include_router(youtube.router)
 app.include_router(scrape.router)
 app.include_router(tor.router)
+app.include_router(activity_summary.router)
 
 
 @app.middleware("http")

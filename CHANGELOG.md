@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- `POST /stats/activity-summary`: streak, last 7 local days, minutes today / this week and weekly accuracy per user, language and IANA time zone (VBM-244).
+- Versioned ClickHouse DDL in `ddl/` (`vocabularySR`, `LikeDislikeStats`, `appUsageMinute`, `learningActivity`) and `scripts/apply_ddl.py` to apply it (VBM-244).
+- `tests/test_activity_summary.py`, gated real-ClickHouse suite `tests/integration/` (`STATS_IT=1`) and `docs/testing.md` (VBM-244).
+
 ### Fixed
 - `POST /stats/` accepts rows of any table (`data: List[Dict[str, Any]]`); `LikeDislikeStats` rows were rejected with 422 before (VBM-242).
 

@@ -82,8 +82,7 @@ otherwise the request is rejected with 422. Column ordering is the sorted union 
 from a row is sent as `None`. A failed ClickHouse insert returns 500 with
 `detail: "ClickHouse insert into '<table>' failed: <reason>"`.
 
-Tests: `tests/test_stats.py` (router-only app, stubbed ClickHouse client) — run with
-`docker run --rm -v "$PWD":/app -w /app vovanvh/voca:stats-dev sh -c 'pip install -q httpx pytest && python -m pytest -q tests'`.
+Tests: `tests/test_stats.py` (router-only app, stubbed ClickHouse client) — commands in `docs/testing.md`.
 
 Main files: @app/routers/stats.py, @app/database.py
 
@@ -112,3 +111,39 @@ For Playwright specifically, `get_playwright_proxy()` formats credentials as sep
 fields because Playwright ignores credentials embedded in the server URL.
 
 Main files: @app/proxy.py, @app/routers/tor.py, @app/config.py
+
+---
+
+### 5. Activity Summary and Versioned ClickHouse DDL
+
+`POST /stats/activity-summary` answers "what is this user's streak and practice time" for one
+`(externalId, languageId)` in the caller's IANA time zone. Body: `{externalId, languageId, timeZone, weekStart?}`
+(`weekStart` = `monday` default or `sunday`, anything else 422). Response: `currentStreak`, `activeToday`,
+`last7Days` (7 entries `{date, active, minutes}`, oldest first), `minutesToday`, `minutesThisWeek`, `accuracy`
+and `timeZone` (the zone actually used).
+
+All calendar math runs in ClickHouse: one query returns local today, `toStartOfWeek(today, mode)` and the
+local-midnight lower bounds as epoch seconds; the activity and minutes queries group by `toDate(ts, tz)`, so
+00:30 local counts on the local day and DST shifts are handled by the server's tzdata. Python only walks the
+streak and sums days. All SQL uses server-side parameters (`{name:Type}`).
+
+- A day is active only with ≥1 `learningActivity` row; minutes alone never make a day active.
+- Minutes come from `appUsageMinute` with `uniqExact(minuteTs)`, so duplicate rows count once.
+- Streak = consecutive active days ending today or yesterday, else 0; capped at `STREAK_LOOKBACK_DAYS` (365),
+  which is also how far back activity is read.
+- `accuracy` = `countIf(result = 1) / countIf(result >= 0)` over the current week, `null` with no graded rows.
+- An unknown zone (not in `system.time_zones`, cached per process) silently falls back to `UTC`.
+- Constants: `WEEK_LENGTH_DAYS`, `STREAK_LOOKBACK_DAYS`, `DEFAULT_TIME_ZONE`, `WEEK_START_MODES`,
+  `DEFAULT_WEEK_START`, table names — all in `app/services/activity_summary.py`.
+
+Schema lives in `ddl/NNN_<table>.sql` (idempotent `CREATE TABLE IF NOT EXISTS`, unqualified names):
+`vocabularySR`, `LikeDislikeStats` (snapshots of the hand-made tables), `appUsageMinute`
+(`ReplacingMergeTree ORDER BY (externalId, minuteTs)`) and `learningActivity` (`MergeTree ORDER BY (externalId, ts)`,
+`result` -1 n/a / 0 wrong / 1 correct). `scripts/apply_ddl.py [--database NAME]` creates the database if missing
+and applies the files in name order. It is a manual step — `scripts/deploy.sh` does not run it.
+Writers must send `DateTime` columns as unix epoch seconds through `POST /stats/`.
+
+Tests: `tests/test_activity_summary.py` (stubbed client) and `tests/integration/test_activity_summary_clickhouse.py`
+(real ClickHouse, `STATS_IT=1`, DST / 00:30 / duplicate-minute / language-isolation fixtures) — see `docs/testing.md`.
+
+Main files: @app/routers/activity_summary.py, @app/services/activity_summary.py, @scripts/apply_ddl.py, @ddl/
