@@ -39,7 +39,10 @@ The service serves as a backend API for:
 my-stats/
 ├── app/                          # Application package
 │   ├── config.py                 # Configuration management
-│   └── database.py               # ClickHouse database client setup
+│   ├── database.py               # ClickHouse database client setup
+│   ├── routers/                  # FastAPI routers (stats, activity_summary, scrape, youtube, tor)
+│   └── services/                 # Query logic (activity_summary)
+├── ddl/                          # Versioned ClickHouse DDL (applied by scripts/apply_ddl.py)
 ├── docker/                       # Docker configurations
 │   └── python/
 │       ├── dev/                  # Development Dockerfile
@@ -47,7 +50,10 @@ my-stats/
 │       └── prod/                 # Production Dockerfile
 │           └── Dockerfile
 ├── scripts/                      # Deployment scripts
+│   ├── apply_ddl.py              # Applies ddl/*.sql in name order
+│   ├── deploy.sh                 # Production deploy
 │   └── start.sh                  # Production startup script
+├── tests/                        # pytest suites (see docs/testing.md)
 ├── main.py                       # FastAPI application entry point
 ├── requirements.txt              # Production dependencies
 ├── requirements-dev.txt          # Development dependencies
@@ -142,8 +148,9 @@ Both containers communicate through a Docker network (`devnetwork`).
 - Configuration-driven connection parameters
 - Singleton pattern through function-based access
 
-**Function**: `get_clickhouse_client()`
+**Function**: `get_clickhouse_client(database=None)`
 - Creates and returns ClickHouse client instance
+- `database` overrides `CLICKHOUSE_DATABASE` (DDL runner, integration tests)
 - Uses settings from configuration
 - Supports secure and non-secure connections
 
@@ -299,6 +306,57 @@ POST /stats/
 - Creates sorted list of column names
 - Builds data matrix with consistent column ordering
 - Handles missing columns by inserting `None` values
+
+##### 3a. Activity Summary Endpoint
+```
+POST /stats/activity-summary
+```
+**Purpose**: Streak, local-day activity, practice minutes and weekly accuracy for one user and language
+
+**Request Body**:
+```json
+{ "externalId": 42, "languageId": 1, "timeZone": "Europe/Berlin", "weekStart": "monday" }
+```
+`weekStart` is `monday` (default) or `sunday`; any other value is a 422.
+
+**Response**:
+```json
+{
+  "currentStreak": 3,
+  "activeToday": true,
+  "last7Days": [{ "date": "2026-03-24", "active": false, "minutes": 0 }],
+  "minutesToday": 12,
+  "minutesThisWeek": 40,
+  "accuracy": 0.75,
+  "timeZone": "Europe/Berlin"
+}
+```
+`last7Days` always has 7 entries (today-6 .. today, oldest first). `timeZone` is the zone actually used.
+
+**Logic** (`app/services/activity_summary.py`):
+1. `timeZone` is checked against `system.time_zones` (cached per process); unknown → `UTC`
+2. ClickHouse computes local today, the week start (`toStartOfWeek`) and the local-midnight lower bounds
+3. `learningActivity` is grouped by `toDate(ts, tz)`; a day is active with ≥1 row for (externalId, languageId)
+4. `appUsageMinute` is grouped by `toDate(minuteTs, tz)` with `uniqExact(minuteTs)`, so duplicate minutes count once
+5. Streak = consecutive active days ending today or yesterday, capped at `STREAK_LOOKBACK_DAYS` (365)
+6. `accuracy` = `correct / graded` over the current week (`result = 1` / `result >= 0`), `null` when nothing is graded
+
+**Errors**:
+- `422` — missing field or invalid `weekStart`
+- `500` — a ClickHouse read failed; body `{"detail": "ClickHouse activity summary failed: <reason>"}`
+
+##### 3b. ClickHouse Schema (`ddl/`)
+Versioned, idempotent DDL: `001_vocabularySR.sql`, `002_LikeDislikeStats.sql`, `003_appUsageMinute.sql`,
+`004_learningActivity.sql`. Production: `scripts/deploy.sh` runs
+`docker exec krys-stats-prod python scripts/apply_ddl.py` after every container restart, so new tables appear on deploy.
+Locally (dev container `krys-stats`) apply by hand:
+```bash
+docker exec krys-stats python scripts/apply_ddl.py                 # default database
+docker exec krys-stats python scripts/apply_ddl.py --database NAME # any other database (created if missing)
+```
+Only additive `CREATE ... IF NOT EXISTS` files belong in `ddl/` while it is re-run on every deploy; an `ALTER` would
+need applied-file tracking first.
+`DateTime` columns (`minuteTs`, `ts`) must be sent to `POST /stats/` as unix epoch seconds; an ISO string fails the insert.
 
 ##### 4. YouTube Transcript Endpoint
 ```
@@ -1079,6 +1137,13 @@ curl -X POST http://localhost:8000/stats/ \
     "table": "LikeDislikeStats",
     "data": [{ "id": 12345, "module": "translator", "type": 0, "value": 1 }]
   }'
+```
+
+### Activity Summary
+```bash
+curl -X POST http://localhost:8000/stats/activity-summary \
+  -H "Content-Type: application/json" \
+  -d '{ "externalId": 42, "languageId": 1, "timeZone": "Europe/Berlin" }'
 ```
 
 ### Get YouTube Transcript

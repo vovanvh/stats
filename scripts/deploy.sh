@@ -13,3 +13,6 @@ docker run -d \
   -e TOR_PROXY_PORT=9050 \
   -e TIMEOUT=180 \
   100.110.75.66:54321/krys-stats:latest
+
+# Apply the idempotent ClickHouse DDL (CREATE ... IF NOT EXISTS) to the prod database
+docker exec krys-stats-prod python scripts/apply_ddl.py
