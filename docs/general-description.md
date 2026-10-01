@@ -347,11 +347,15 @@ POST /stats/activity-summary
 
 ##### 3b. ClickHouse Schema (`ddl/`)
 Versioned, idempotent DDL: `001_vocabularySR.sql`, `002_LikeDislikeStats.sql`, `003_appUsageMinute.sql`,
-`004_learningActivity.sql`. Apply (manual step, not part of `scripts/deploy.sh`):
+`004_learningActivity.sql`. Production: `scripts/deploy.sh` runs
+`docker exec krys-stats-prod python scripts/apply_ddl.py` after every container restart, so new tables appear on deploy.
+Locally (dev container `krys-stats`) apply by hand:
 ```bash
 docker exec krys-stats python scripts/apply_ddl.py                 # default database
 docker exec krys-stats python scripts/apply_ddl.py --database NAME # any other database (created if missing)
 ```
+Only additive `CREATE ... IF NOT EXISTS` files belong in `ddl/` while it is re-run on every deploy; an `ALTER` would
+need applied-file tracking first.
 `DateTime` columns (`minuteTs`, `ts`) must be sent to `POST /stats/` as unix epoch seconds; an ISO string fails the insert.
 
 ##### 4. YouTube Transcript Endpoint

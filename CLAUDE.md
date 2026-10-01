@@ -140,7 +140,8 @@ Schema lives in `ddl/NNN_<table>.sql` (idempotent `CREATE TABLE IF NOT EXISTS`, 
 `vocabularySR`, `LikeDislikeStats` (snapshots of the hand-made tables), `appUsageMinute`
 (`ReplacingMergeTree ORDER BY (externalId, minuteTs)`) and `learningActivity` (`MergeTree ORDER BY (externalId, ts)`,
 `result` -1 n/a / 0 wrong / 1 correct). `scripts/apply_ddl.py [--database NAME]` creates the database if missing
-and applies the files in name order. It is a manual step — `scripts/deploy.sh` does not run it.
+and applies the files in name order. `scripts/deploy.sh` runs it on every prod deploy (`krys-stats-prod`), so `ddl/`
+must stay additive and idempotent (no `ALTER` without applied-file tracking).
 Writers must send `DateTime` columns as unix epoch seconds through `POST /stats/`.
 
 Tests: `tests/test_activity_summary.py` (stubbed client) and `tests/integration/test_activity_summary_clickhouse.py`
