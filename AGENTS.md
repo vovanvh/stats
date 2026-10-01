@@ -73,13 +73,16 @@ Main files: @app/routers/youtube.py
 
 ### 3. Statistics Ingestion into ClickHouse
 
-A single `POST /stats/` endpoint that bulk-inserts vocabulary learning stat records into a ClickHouse table.
-The request body carries the target table name and a list of stat items, each representing one word's spaced
-repetition state: language pair, word ID, external ID, SM-2 interval and repetition count, last result,
-and timestamps for when the record was added, last updated, and when the next review is due.
+A single `POST /stats/` endpoint that bulk-inserts rows into any ClickHouse table. The request body carries the
+target `table` and `data`, a non-empty list of plain row objects (`List[Dict[str, Any]]`), so one path serves
+`vocabularySR` (spaced-repetition state), `LikeDislikeStats` (`{id, module, type, value}`) and any future table.
 
-Column ordering for the ClickHouse insert is derived dynamically from the union of all keys present in the
-payload, so the endpoint is tolerant of sparse records where some fields may be absent.
+The table name (stripped) and every column key must match `IDENTIFIER_PATTERN` (`^[A-Za-z_][A-Za-z0-9_]*$`);
+otherwise the request is rejected with 422. Column ordering is the sorted union of all row keys; a key missing
+from a row is sent as `None`. A failed ClickHouse insert returns 500 with
+`detail: "ClickHouse insert into '<table>' failed: <reason>"`.
+
+Tests: `tests/test_stats.py` (router-only app, stubbed ClickHouse client) — commands in `docs/testing.md`.
 
 Main files: @app/routers/stats.py, @app/database.py
 
@@ -108,3 +111,43 @@ For Playwright specifically, `get_playwright_proxy()` formats credentials as sep
 fields because Playwright ignores credentials embedded in the server URL.
 
 Main files: @app/proxy.py, @app/routers/tor.py, @app/config.py
+
+---
+
+### 5. Activity Summary and Versioned ClickHouse DDL
+
+`POST /stats/activity-summary` answers "what is this user's streak and practice time" for one
+`(externalId, languageId)` in the caller's IANA time zone. Body: `{externalId, languageId, timeZone, weekStart?}`
+(`weekStart` = `monday` default or `sunday`, anything else 422). Response: `currentStreak`, `activeToday`,
+`last7Days` (7 entries `{date, active, minutes}`, oldest first), `minutesToday`, `minutesThisWeek`, `accuracy`
+and `timeZone` (the zone actually used).
+
+All calendar math runs in ClickHouse: one query returns local today, `toStartOfWeek(today, mode)` and the
+local-midnight lower bounds as epoch seconds; the activity and minutes queries group by `toDate(ts, tz)`, so
+00:30 local counts on the local day and DST shifts are handled by the server's tzdata. Python only walks the
+streak and sums days. All SQL uses server-side parameters (`{name:Type}`).
+
+- A day is active only with ≥1 `learningActivity` row; minutes alone never make a day active.
+- Minutes come from `appUsageMinute` with `uniqExact(minuteTs)`, so duplicate rows count once.
+- Streak = consecutive active days ending today or yesterday, else 0; capped at `STREAK_LOOKBACK_DAYS` (365),
+  which is also how far back activity is read.
+- `accuracy` = `countIf(result = 1) / countIf(result >= 0)` over the current week, `null` with no graded rows.
+- An unknown zone (not in `system.time_zones`, cached per process) silently falls back to `UTC`.
+- Constants: `WEEK_LENGTH_DAYS`, `STREAK_LOOKBACK_DAYS`, `DEFAULT_TIME_ZONE`, `WEEK_START_MODES`,
+  `DEFAULT_WEEK_START`, table names — all in `app/services/activity_summary.py`.
+
+Schema lives in `ddl/NNN_<table>.sql` (idempotent `CREATE TABLE IF NOT EXISTS`, unqualified names):
+`vocabularySR`, `LikeDislikeStats` (snapshots of the hand-made tables), `appUsageMinute`
+(`ReplacingMergeTree ORDER BY (externalId, languageId, minuteTs)`, so a merge never collapses one language's minute
+into another's) and `learningActivity` (`MergeTree ORDER BY (externalId, ts)`, `result` -1 n/a / 0 wrong / 1 correct).
+`scripts/apply_ddl.py [--database NAME]` creates the database if missing and applies the files in name order, then
+compares every table's `system.tables.sorting_key` with its file's `ORDER BY` and exits non-zero on a mismatch
+(`IF NOT EXISTS` would otherwise keep a stale table silently; drop it and re-run). `scripts/deploy.sh` runs it on every prod deploy (`krys-stats-prod`), so `ddl/`
+must stay additive and idempotent (no `ALTER` without applied-file tracking).
+Writers must send `DateTime` columns as unix epoch seconds through `POST /stats/`.
+
+Tests: `tests/test_activity_summary.py` (stubbed client), `tests/test_apply_ddl.py` (sorting-key guard) and
+`tests/integration/test_activity_summary_clickhouse.py` (real ClickHouse, `STATS_IT=1`, DST / 00:30 /
+duplicate-minute / language-isolation fixtures, also after `OPTIMIZE ... FINAL`) — see `docs/testing.md`.
+
+Main files: @app/routers/activity_summary.py, @app/services/activity_summary.py, @scripts/apply_ddl.py, @ddl/

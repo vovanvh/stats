@@ -13,6 +13,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `tests/test_activity_summary.py`, gated real-ClickHouse suite `tests/integration/` (`STATS_IT=1`) and `docs/testing.md` (VBM-244).
 
 ### Fixed
+- `appUsageMinute` sorting key is now `(externalId, languageId, minuteTs)`; the old `(externalId, minuteTs)` key let a merge drop one language's minute when two languages shared it. Existing tables must be dropped and re-created (VBM-244).
+- `scripts/apply_ddl.py` fails when a live table's sorting key differs from its `ddl/` file (VBM-244).
 - `POST /stats/` accepts rows of any table (`data: List[Dict[str, Any]]`); `LikeDislikeStats` rows were rejected with 422 before (VBM-242).
 
 ### Changed
