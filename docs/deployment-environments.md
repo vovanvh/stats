@@ -94,7 +94,7 @@ CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]
 
 ### Docker Compose Configuration
 
-**File**: `docker-compose.dev.yaml`
+**File**: `docker-compose.yaml`
 
 ```yaml
 services:
@@ -200,20 +200,20 @@ nano .env  # or your preferred editor
 
 ```bash
 # Build the development image
-docker-compose -f docker-compose.dev.yaml build
+docker-compose -f docker-compose.yaml build
 
 # Start all services in detached mode
-docker-compose -f docker-compose.dev.yaml up -d
+docker-compose -f docker-compose.yaml up -d
 
 # Or start with logs visible (Ctrl+C to stop)
-docker-compose -f docker-compose.dev.yaml up
+docker-compose -f docker-compose.yaml up
 ```
 
 #### Verifying the Deployment
 
 ```bash
 # Check running containers
-docker-compose -f docker-compose.dev.yaml ps
+docker-compose -f docker-compose.yaml ps
 
 # Expected output:
 # NAME           IMAGE                      COMMAND                  SERVICE   STATUS
@@ -221,7 +221,7 @@ docker-compose -f docker-compose.dev.yaml ps
 # tor-proxy      dperson/torproxy           "/sbin/tini -- tor"      tor       Up 2 minutes
 
 # View logs
-docker-compose -f docker-compose.dev.yaml logs -f server
+docker-compose -f docker-compose.yaml logs -f server
 
 # Test the health endpoint
 curl http://localhost:8000/health
@@ -230,7 +230,7 @@ curl http://localhost:8000/health
 # {"status":"healthy"}
 
 # Test Tor proxy functionality
-curl http://localhost:8000/test-tor
+curl http://localhost:8000/proxy/test
 ```
 
 #### Making Code Changes
@@ -243,7 +243,7 @@ nano main.py
 
 # 2. Uvicorn automatically detects changes and reloads
 # Watch the logs to see the reload:
-docker-compose -f docker-compose.dev.yaml logs -f server
+docker-compose -f docker-compose.yaml logs -f server
 
 # You should see: "Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)"
 ```
@@ -252,13 +252,13 @@ docker-compose -f docker-compose.dev.yaml logs -f server
 
 ```bash
 # Stop all services
-docker-compose -f docker-compose.dev.yaml down
+docker-compose -f docker-compose.yaml down
 
 # Stop and remove volumes (careful: this deletes data)
-docker-compose -f docker-compose.dev.yaml down -v
+docker-compose -f docker-compose.yaml down -v
 
 # Stop a specific service
-docker-compose -f docker-compose.dev.yaml stop server
+docker-compose -f docker-compose.yaml stop server
 ```
 
 ### Testing API Endpoints
@@ -268,7 +268,7 @@ docker-compose -f docker-compose.dev.yaml stop server
 curl http://localhost:8000/health
 
 # Test Tor connection
-curl http://localhost:8000/test-tor
+curl http://localhost:8000/proxy/test
 
 # Get YouTube transcript
 curl "http://localhost:8000/yt?videoId=dQw4w9WgXcQ&language=en"
@@ -473,7 +473,11 @@ Total capacity = 2 workers × 1000 connections = 2000 concurrent connections
 
 ### Docker Compose Configuration
 
-**File**: `docker-compose.prod.yaml`
+> **Stale:** there is no `docker-compose.prod.yaml` in the repo. Production is deployed by
+> `.woodpecker.yml` (build + push image) and `scripts/deploy.sh` (`docker run` of
+> `krys-stats-prod` with `~/stats/.env.prod`). The snippet below is kept for reference only.
+
+**File**: `docker-compose.prod.yaml` (not in repo)
 
 ```yaml
 services:
@@ -653,7 +657,7 @@ docker stats krys-stats-prod
 # krys-stats-prod    5.23%    145MiB / 512MiB      28.32%
 
 # Test Tor proxy functionality
-docker exec krys-stats-prod curl http://localhost:80/test-tor
+docker exec krys-stats-prod curl http://localhost:80/proxy/test
 ```
 
 #### Accessing the Production Service
@@ -799,25 +803,25 @@ Startup Time: ~40 seconds (worker initialization)
 
 ```bash
 # Currently running development, switch to production:
-docker-compose -f docker-compose.dev.yaml down
+docker-compose -f docker-compose.yaml down
 docker-compose -f docker-compose.prod.yaml up -d
 
 # Currently running production, switch to development:
 docker-compose -f docker-compose.prod.yaml down
-docker-compose -f docker-compose.dev.yaml up -d
+docker-compose -f docker-compose.yaml up -d
 ```
 
 ### Viewing Logs
 
 ```bash
 # Development logs
-docker-compose -f docker-compose.dev.yaml logs -f server
+docker-compose -f docker-compose.yaml logs -f server
 
 # Production logs
 docker-compose -f docker-compose.prod.yaml logs -f server
 
 # All services logs
-docker-compose -f docker-compose.dev.yaml logs -f
+docker-compose -f docker-compose.yaml logs -f
 
 # Specific time range
 docker-compose logs --since 30m server
@@ -881,26 +885,26 @@ print(result.result_rows)
 
 ```bash
 # Development: Rebuild without cache
-docker-compose -f docker-compose.dev.yaml build --no-cache
+docker-compose -f docker-compose.yaml build --no-cache
 
 # Production: Rebuild without cache
 docker-compose -f docker-compose.prod.yaml build --no-cache
 
 # Rebuild specific service
-docker-compose -f docker-compose.dev.yaml build server
+docker-compose -f docker-compose.yaml build server
 ```
 
 ### Cleanup Operations
 
 ```bash
 # Stop and remove containers
-docker-compose -f docker-compose.dev.yaml down
+docker-compose -f docker-compose.yaml down
 
 # Remove containers and volumes
-docker-compose -f docker-compose.dev.yaml down -v
+docker-compose -f docker-compose.yaml down -v
 
 # Remove containers, volumes, and images
-docker-compose -f docker-compose.dev.yaml down -v --rmi all
+docker-compose -f docker-compose.yaml down -v --rmi all
 
 # Clean up unused Docker resources
 docker system prune -a
@@ -910,10 +914,10 @@ docker system prune -a
 
 ```bash
 # Development environment
-curl http://localhost:8000/test-tor
+curl http://localhost:8000/proxy/test
 
 # Production environment (from inside container)
-docker exec krys-stats-prod curl http://localhost:80/test-tor
+docker exec krys-stats-prod curl http://localhost:80/proxy/test
 
 # Expected response (when working):
 {
@@ -1031,7 +1035,7 @@ docker exec krys-stats-prod curl -v http://localhost:80/health
 docker logs tor-proxy
 
 # Test proxy connectivity
-docker exec krys-stats curl http://localhost:8000/test-tor
+docker exec krys-stats curl http://localhost:8000/proxy/test
 
 # Common causes:
 # 1. Tor container not running
