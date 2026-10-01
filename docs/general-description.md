@@ -338,6 +338,7 @@ POST /stats/activity-summary
 2. ClickHouse computes local today, the week start (`toStartOfWeek`) and the local-midnight lower bounds
 3. `learningActivity` is grouped by `toDate(ts, tz)`; a day is active with ≥1 row for (externalId, languageId)
 4. `appUsageMinute` is grouped by `toDate(minuteTs, tz)` with `uniqExact(minuteTs)`, so duplicate minutes count once
+   (the table key includes `languageId`, so merges never collapse minutes across languages)
 5. Streak = consecutive active days ending today or yesterday, capped at `STREAK_LOOKBACK_DAYS` (365)
 6. `accuracy` = `correct / graded` over the current week (`result = 1` / `result >= 0`), `null` when nothing is graded
 
@@ -356,6 +357,14 @@ docker exec krys-stats python scripts/apply_ddl.py --database NAME # any other d
 ```
 Only additive `CREATE ... IF NOT EXISTS` files belong in `ddl/` while it is re-run on every deploy; an `ALTER` would
 need applied-file tracking first.
+After applying, the runner compares each table's `system.tables.sorting_key` with the file's `ORDER BY` and exits
+non-zero on a mismatch (`<table>: sorting key '<actual>' differs from ddl '<expected>'; DROP TABLE and re-run`).
+`appUsageMinute` is keyed `(externalId, languageId, minuteTs)`. One-off migration for any environment created before
+VBM-244's fix (old key `(externalId, minuteTs)`, no writers yet, so nothing is lost):
+```bash
+docker exec v_clickhouse clickhouse-client -q "DROP TABLE default.appUsageMinute"
+docker exec krys-stats python scripts/apply_ddl.py
+```
 `DateTime` columns (`minuteTs`, `ts`) must be sent to `POST /stats/` as unix epoch seconds; an ISO string fails the insert.
 
 ##### 4. YouTube Transcript Endpoint

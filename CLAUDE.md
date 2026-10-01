@@ -138,13 +138,16 @@ streak and sums days. All SQL uses server-side parameters (`{name:Type}`).
 
 Schema lives in `ddl/NNN_<table>.sql` (idempotent `CREATE TABLE IF NOT EXISTS`, unqualified names):
 `vocabularySR`, `LikeDislikeStats` (snapshots of the hand-made tables), `appUsageMinute`
-(`ReplacingMergeTree ORDER BY (externalId, minuteTs)`) and `learningActivity` (`MergeTree ORDER BY (externalId, ts)`,
-`result` -1 n/a / 0 wrong / 1 correct). `scripts/apply_ddl.py [--database NAME]` creates the database if missing
-and applies the files in name order. `scripts/deploy.sh` runs it on every prod deploy (`krys-stats-prod`), so `ddl/`
+(`ReplacingMergeTree ORDER BY (externalId, languageId, minuteTs)`, so a merge never collapses one language's minute
+into another's) and `learningActivity` (`MergeTree ORDER BY (externalId, ts)`, `result` -1 n/a / 0 wrong / 1 correct).
+`scripts/apply_ddl.py [--database NAME]` creates the database if missing and applies the files in name order, then
+compares every table's `system.tables.sorting_key` with its file's `ORDER BY` and exits non-zero on a mismatch
+(`IF NOT EXISTS` would otherwise keep a stale table silently; drop it and re-run). `scripts/deploy.sh` runs it on every prod deploy (`krys-stats-prod`), so `ddl/`
 must stay additive and idempotent (no `ALTER` without applied-file tracking).
 Writers must send `DateTime` columns as unix epoch seconds through `POST /stats/`.
 
-Tests: `tests/test_activity_summary.py` (stubbed client) and `tests/integration/test_activity_summary_clickhouse.py`
-(real ClickHouse, `STATS_IT=1`, DST / 00:30 / duplicate-minute / language-isolation fixtures) — see `docs/testing.md`.
+Tests: `tests/test_activity_summary.py` (stubbed client), `tests/test_apply_ddl.py` (sorting-key guard) and
+`tests/integration/test_activity_summary_clickhouse.py` (real ClickHouse, `STATS_IT=1`, DST / 00:30 /
+duplicate-minute / language-isolation fixtures, also after `OPTIMIZE ... FINAL`) — see `docs/testing.md`.
 
 Main files: @app/routers/activity_summary.py, @app/services/activity_summary.py, @scripts/apply_ddl.py, @ddl/

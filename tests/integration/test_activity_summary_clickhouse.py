@@ -30,6 +30,7 @@ NOT_GRADED, WRONG, CORRECT = -1, 0, 1
 ACTIVITY_COLUMNS = ["externalId", "languageId", "activityType", "entityId", "ts", "result"]
 MINUTE_COLUMNS = ["externalId", "languageId", "minuteTs", "platform", "appVersion"]
 EXPECTED_TABLES = {"vocabularySR", "LikeDislikeStats", APP_USAGE_MINUTE_TABLE, LEARNING_ACTIVITY_TABLE}
+APP_USAGE_MINUTE_KEY = "externalId, languageId, minuteTs"
 
 
 def utc(text: str) -> int:
@@ -67,6 +68,11 @@ def add_minutes(client, external_id, rows):
     client.insert(APP_USAGE_MINUTE_TABLE, data, MINUTE_COLUMNS)
 
 
+def merge_minutes(client):
+    """Force the ReplacingMergeTree merge so duplicate collapsing is observable."""
+    client.command(f"OPTIMIZE TABLE {APP_USAGE_MINUTE_TABLE} FINAL")
+
+
 def active_dates(summary):
     """ISO dates marked active in last7Days."""
     return [d["date"] for d in summary["last7Days"] if d["active"]]
@@ -77,6 +83,11 @@ def test_ddl_creates_all_tables(client):
 
     assert tables == EXPECTED_TABLES
     assert len(list_ddl_files()) == len(EXPECTED_TABLES)
+    key = client.query(
+        "SELECT sorting_key FROM system.tables WHERE database = {db:String} AND name = {t:String}",
+        parameters={"db": TEST_DATABASE, "t": APP_USAGE_MINUTE_TABLE},
+    ).result_rows[0][0]
+    assert key == APP_USAGE_MINUTE_KEY
 
 
 def test_dst_spring_and_local_00_30(client):
@@ -134,8 +145,12 @@ def test_duplicate_minutes_count_once(client):
     add_minutes(client, user, [(LANG, minute), (LANG, utc("2026-05-10 08:16"))])
 
     summary = build_summary(client, user, LANG, BERLIN, "monday", utc("2026-05-10 12:00"))
-
     assert summary["minutesToday"] == 2
+
+    # After the merge collapses the duplicate row the count is unchanged
+    merge_minutes(client)
+    merged = build_summary(client, user, LANG, BERLIN, "monday", utc("2026-05-10 12:00"))
+    assert merged["minutesToday"] == 2
 
 
 def test_minutes_only_day_is_not_active(client):
@@ -185,6 +200,21 @@ def test_language_isolation(client):
     assert other["currentStreak"] == 2
     assert other["accuracy"] == 0.0
     assert other["minutesToday"] == 2
+
+
+def test_language_isolation_survives_merge(client):
+    user = 106
+    now = utc("2026-08-20 12:00")
+    minute = utc("2026-08-20 08:00")
+    # The same minute in two languages must stay two rows after the merge
+    add_minutes(client, user, [(LANG, minute), (OTHER_LANG, minute)])
+    merge_minutes(client)
+
+    first = build_summary(client, user, LANG, BERLIN, "monday", now)
+    other = build_summary(client, user, OTHER_LANG, BERLIN, "monday", now)
+
+    assert first["minutesToday"] == 1
+    assert other["minutesToday"] == 1
 
 
 def test_unknown_zone_falls_back_to_utc(client):
