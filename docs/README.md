@@ -63,13 +63,13 @@ The project recently underwent a major upgrade to fix critical Tor proxy issues:
 
 **New Features**:
 - Country-specific exit node selection
-- Manual IP rotation via API (`POST /tor/new-identity`)
+- Manual IP rotation via API (`POST /proxy/new-identity`)
 - Tor control port integration (9051)
 - Advanced circuit configuration
 
 **Files Changed**:
 - New: `torrc` (Tor configuration)
-- Updated: `docker-compose.dev.yaml`, `docker-compose.prod.yaml`
+- Updated: `docker-compose.yaml`
 - Updated: `main.py` (SOCKS5 fix, new endpoint)
 - Updated: All documentation
 
@@ -94,7 +94,7 @@ The project recently underwent a major upgrade to fix critical Tor proxy issues:
    cp .env.example .env
 
    # Start services
-   docker-compose -f docker-compose.dev.yaml up -d
+   docker-compose -f docker-compose.yaml up -d
    ```
 
 3. **Test the setup**:
@@ -103,7 +103,7 @@ The project recently underwent a major upgrade to fix critical Tor proxy issues:
    curl http://localhost:8000/health
 
    # Test Tor proxy
-   curl http://localhost:8000/test-tor
+   curl http://localhost:8000/proxy/test
 
    # Test YouTube API
    curl "http://localhost:8000/yt-list?videoId=dQw4w9WgXcQ"
@@ -128,8 +128,8 @@ The project recently underwent a major upgrade to fix critical Tor proxy issues:
 
 3. **Restart containers**:
    ```bash
-   docker-compose -f docker-compose.dev.yaml down
-   docker-compose -f docker-compose.dev.yaml up -d
+   docker-compose -f docker-compose.yaml down
+   docker-compose -f docker-compose.yaml up -d
    ```
 
 4. **Verify Tor upgrade**:
@@ -138,7 +138,7 @@ The project recently underwent a major upgrade to fix critical Tor proxy issues:
    docker logs tor-proxy --tail=50
 
    # Test new endpoint
-   curl -X POST http://localhost:8000/tor/new-identity
+   curl -X POST http://localhost:8000/proxy/new-identity
    ```
 
 ## 📖 Documentation Structure
@@ -153,8 +153,7 @@ my-stats/
 ├── CHANGELOG.md                     # Version history and changes
 ├── README.md                        # Project README (if exists)
 ├── torrc                            # Tor configuration file
-├── docker-compose.dev.yaml          # Development Docker config
-├── docker-compose.prod.yaml         # Production Docker config
+├── docker-compose.yaml              # Development Docker config (prod: scripts/deploy.sh via .woodpecker.yml)
 ├── main.py                          # FastAPI application
 ├── requirements.txt                 # Python dependencies
 └── app/                             # Application code
@@ -198,7 +197,7 @@ my-stats/
 
 **"I want to add retry logic to my client"**
 → See [tor-proxy.md](tor-proxy.md) - "Client Integration (NestJS)" section
-→ Use `/tor/new-identity` endpoint before retrying
+→ Use `/proxy/new-identity` endpoint before retrying
 
 **"I need to configure Tor for different countries"**
 → Edit `torrc` file - `ExitNodes` parameter
@@ -237,7 +236,7 @@ my-stats/
 |-------|----------|
 | "Socks version 71 not recognized" | Upgrade to latest code (fixed in 2.0.0) |
 | "Protocol not supported" warnings | Upgrade Tor image (fixed in 2.0.0) |
-| YouTube 404 errors | Use retry logic with `/tor/new-identity` |
+| YouTube 404 errors | Use retry logic with `/proxy/new-identity` |
 | Control port connection refused | Check `torrc` mounted and port 9051 exposed |
 | Container won't start | Check Docker logs, verify network exists |
 
