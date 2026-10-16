@@ -67,7 +67,18 @@ return 503, YouTube IP bans return 429 with a hint to rotate the proxy identity)
 `get_youtube_api_client`. When an IP ban is hit, the error message links the caller directly to the
 `POST /proxy/new-identity` endpoint to get a new exit IP.
 
-Main files: @app/routers/youtube.py
+Both endpoints share `_run_with_rotation`, which retries up to `_MAX_YT_ATTEMPTS` (3) times on the paid proxy.
+Before each retry it calls `rotate_session()`, and the client is rebuilt each attempt, so a dead or blocked
+residential exit node (e.g. FloppyData's `Tunnel connection failed: 504 Gateway Time-out`) no longer fails every
+request until someone rotates by hand. Retryable errors (`_is_retryable`) are `requests` `ConnectionError`/`Timeout`
+(incl. `ProxyError`) and `RequestBlocked`/`IpBlocked`. Anything else (no transcript, video unavailable) fails fast
+with 404. Tor gets a single attempt. `_to_http_error` maps the final error to 429 (blocked), 503 (connection) or 404.
+The synchronous `requests` call runs in `asyncio.to_thread`, so retries never block the event loop or `/health`.
+As with scraping, the session ID is global, so a rotation also changes the exit IP for concurrent requests.
+
+Tests: `tests/test_youtube.py` (router-only app, stubbed client and rotation).
+
+Main files: @app/routers/youtube.py, @app/proxy.py
 
 ---
 
