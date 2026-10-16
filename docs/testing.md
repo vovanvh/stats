@@ -26,6 +26,14 @@ to prove it is idempotent) and drops the database afterwards. Without `STATS_IT=
 - Missing / empty / qualified / injected table names, bad column keys and empty `data` are 422.
 - An insert failure is a 500 carrying the ClickHouse message.
 
+### `tests/test_youtube.py` — `/yt`, `/yt-list` retry with proxy rotation (stubbed client)
+- A `ProxyError` (gateway 504 tunnel failure) is retried on a rotated session and then succeeds.
+- `ProxyError` on every attempt is a 503 after `_MAX_YT_ATTEMPTS` attempts with `_MAX_YT_ATTEMPTS - 1` rotations.
+- `IpBlocked` is retried on a rotated session; blocked on every attempt is a 429.
+- A non-retryable error (`VideoUnavailable`) is a 404 after one attempt, no rotation.
+- `isFree=true` gets a single attempt, no rotation.
+- `/yt-list` returns the mapped track list after a retry.
+
 ### `tests/test_activity_summary.py` — activity summary (stubbed client)
 - `compute_streak`: ends today, ends yesterday, 0 when neither is active, stops at a gap, capped at `STREAK_LOOKBACK_DAYS`.
 - `accuracy` is null without graded answers and counts only the current week.

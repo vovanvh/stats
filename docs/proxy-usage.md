@@ -42,7 +42,9 @@ GET /yt-list?videoId=dQw4w9WgXcQ&isFree=true
 
 ### Handling IP Blocks (429 errors)
 
-YouTube aggressively blocks IPs. When you receive a 429 error, rotate the IP:
+YouTube aggressively blocks IPs. With the paid proxy (`isFree=false`) `/yt` and `/yt-list` already retry up to
+3 times, rotating the session (new exit IP) before each retry on an IP block or a proxy/connection failure, so a 429
+or 503 means every attempt failed. Tor gets a single attempt. To rotate manually:
 
 ```bash
 # If using paid proxy (isFree=false)
