@@ -1,8 +1,9 @@
 import asyncio
 from fastapi import APIRouter, HTTPException, Query
-from typing import Any, Callable, Optional
+from typing import Any, Callable, Dict, Iterable, List, Optional
 from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout as RequestsTimeout
 from youtube_transcript_api import YouTubeTranscriptApi, RequestBlocked
+from youtube_transcript_api._transcripts import TranscriptListFetcher
 from youtube_transcript_api.proxies import GenericProxyConfig
 from app.proxy import get_proxy, rotate_session
 
@@ -10,6 +11,81 @@ router = APIRouter(prefix="/yt", tags=["youtube"])
 
 # Total attempts per request (paid proxy only); retries rotate the proxy exit IP between tries
 _MAX_YT_ATTEMPTS = 3
+
+# An innertube audio track id is "<language>.<n>" (e.g. "en-US.4"); the language part may carry a region
+_AUDIO_TRACK_ID_SEPARATOR = "."
+_LANG_REGION_SEPARATOR = "-"
+
+
+class _AudioTrackAwareFetcher(TranscriptListFetcher):
+    """
+    Transcript list fetcher that also keeps the `streamingData.adaptiveFormats` of the innertube player
+    response the library already requests, so the original audio language of an auto-dubbed video is
+    known without a second YouTube call. Relies on the private API of the pinned youtube-transcript-api
+    1.2.3 (`TranscriptListFetcher._extract_captions_json`); re-check both names on a version bump.
+    """
+
+    def __init__(self, *args: Any, **kwargs: Any) -> None:
+        super().__init__(*args, **kwargs)
+        # Adaptive formats of the last `list()` call; [] until one succeeded
+        self.adaptive_formats: List[Dict[str, Any]] = []
+
+    def _extract_captions_json(self, innertube_data: Dict, video_id: str) -> Dict:
+        # Keep the audio formats before the library discards everything but the captions
+        streaming_data = innertube_data.get("streamingData") or {}
+        formats = streaming_data.get("adaptiveFormats") or []
+        self.adaptive_formats = formats if isinstance(formats, list) else []
+        return super()._extract_captions_json(innertube_data, video_id)
+
+
+def _base_language(code: str) -> str:
+    """Strip the region of a BCP-47 code and lower-case it: "en-US" -> "en"."""
+    return (code or "").split(_LANG_REGION_SEPARATOR)[0].strip().lower()
+
+
+def _audio_track_language(audio_track: Dict[str, Any]) -> str:
+    """Language part of an innertube audio track id without its region: "en-US.4" -> "en"."""
+    track_id = str(audio_track.get("id") or "")
+    return _base_language(track_id.split(_AUDIO_TRACK_ID_SEPARATOR)[0])
+
+
+def resolve_original_language_code(adaptive_formats: Iterable[Dict[str, Any]], tracks: Iterable[Dict[str, Any]]) -> Optional[str]:
+    """
+    Language code of the video's original audio, derived from the player's audio tracks:
+    the default track that is not auto-dubbed, else the only non-dubbed one. A video without audio
+    tracks resolves to its single auto-generated caption track. None when undetermined or when no
+    listed caption track has that language.
+    """
+    tracks = list(tracks)
+
+    # Unique audio tracks by id; a video has one format entry per bitrate for the same track
+    audio_tracks: Dict[str, Dict[str, Any]] = {}
+    for fmt in adaptive_formats:
+        audio_track = fmt.get("audioTrack") if isinstance(fmt, dict) else None
+        if isinstance(audio_track, dict) and audio_track.get("id"):
+            audio_tracks.setdefault(str(audio_track["id"]), audio_track)
+
+    candidate: Optional[str] = None
+    if audio_tracks:
+        # Original = the default track that is not an auto-dub, else the single non-dubbed track
+        not_dubbed = [t for t in audio_tracks.values() if not t.get("isAutoDubbed")]
+        default = [t for t in not_dubbed if t.get("audioIsDefault")]
+        if default:
+            candidate = _audio_track_language(default[0])
+        elif len(not_dubbed) == 1:
+            candidate = _audio_track_language(not_dubbed[0])
+    else:
+        # No audio track metadata: a single auto-generated caption track is the spoken language
+        generated = [t for t in tracks if t.get("is_generated")]
+        if len(generated) == 1:
+            candidate = _base_language(str(generated[0].get("language_code") or ""))
+
+    # The code is only useful when a listed caption track carries that language
+    if not candidate:
+        return None
+    if not any(_base_language(str(t.get("language_code") or "")) == candidate for t in tracks):
+        return None
+    return candidate
 
 
 def get_youtube_api_client(is_free: bool = False) -> YouTubeTranscriptApi:
@@ -26,7 +102,10 @@ def get_youtube_api_client(is_free: bool = False) -> YouTubeTranscriptApi:
         http_url=proxy_config.http_url,
         https_url=proxy_config.https_url,
     )
-    return YouTubeTranscriptApi(proxy_config=ytt_proxy)
+    client = YouTubeTranscriptApi(proxy_config=ytt_proxy)
+    # Swap in the fetcher that keeps the audio tracks (same session and proxy config)
+    client._fetcher = _AudioTrackAwareFetcher(client._fetcher._http_client, proxy_config=ytt_proxy)
+    return client
 
 
 def _is_retryable(exc: Exception) -> bool:
@@ -119,14 +198,15 @@ async def get_available_transcripts(
     isFree: Optional[bool] = Query(False, description="Use free Tor proxy instead of paid residential proxy")
 ):
     """
-    List the transcript tracks available for a video.
-    Retries with a rotated paid-proxy session on proxy failures and IP blocks.
+    List the transcript tracks available for a video plus the original audio language
+    (`original_language_code`, null when undetermined), so auto-dubbed videos resolve to their
+    spoken language. Retries with a rotated paid-proxy session on proxy failures and IP blocks.
     """
     print(f"[YT-LIST] Getting available transcripts for video {videoId}, isFree={isFree}")
 
-    def list_tracks(client: YouTubeTranscriptApi) -> list:
+    def list_tracks(client: YouTubeTranscriptApi) -> dict:
         # Map each track to a plain dict inside the worker thread
-        return [
+        available_transcripts = [
             {
                 "language": t.language,
                 "language_code": t.language_code,
@@ -136,8 +216,17 @@ async def get_available_transcripts(
             for t in client.list(videoId)
         ]
 
+        # Audio tracks kept by the fetcher during that same request; absent on a plain client
+        adaptive_formats = getattr(getattr(client, "_fetcher", None), "adaptive_formats", None)
+        if not isinstance(adaptive_formats, list):
+            adaptive_formats = []
+
+        return {
+            "available_transcripts": available_transcripts,
+            "original_language_code": resolve_original_language_code(adaptive_formats, available_transcripts),
+        }
+
     try:
-        available_transcripts = await _run_with_rotation("YT-LIST", isFree, list_tracks)
-        return {"available_transcripts": available_transcripts}
+        return await _run_with_rotation("YT-LIST", isFree, list_tracks)
     except Exception as e:
         raise _to_http_error("YT-LIST", e, isFree)

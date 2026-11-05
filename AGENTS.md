@@ -67,6 +67,18 @@ return 503, YouTube IP bans return 429 with a hint to rotate the proxy identity)
 `get_youtube_api_client`. When an IP ban is hit, the error message links the caller directly to the
 `POST /proxy/new-identity` endpoint to get a new exit IP.
 
+`GET /yt-list` also returns `original_language_code` (VBM-499). Auto-dubbed videos expose one auto-generated
+caption track per dubbed audio track, all alike and sorted alphabetically, so a caller taking the first one gets a
+machine translation. `youtube-transcript-api` 1.2.3 makes a single innertube `/youtubei/v1/player` request and keeps
+only `captions`; `_AudioTrackAwareFetcher` (a `TranscriptListFetcher` subclass installed by `get_youtube_api_client`,
+private API — re-check `_extract_captions_json` on a version bump) also keeps `streamingData.adaptiveFormats`, so no
+second YouTube request is made. `resolve_original_language_code` picks the `audioTrack` with `audioIsDefault` and
+without `isAutoDubbed` (else the only non-dubbed one), takes the language part of its id (`en-US.4` → `en-US`) and
+strips the region (`en`); a video without audio-track metadata resolves to its single auto-generated caption track.
+The result is `null` when undetermined or when no listed caption track has that language.
+
+Tests: `tests/test_youtube.py` (router-only app, stubbed client and rotation).
+
 Main files: @app/routers/youtube.py
 
 ---
