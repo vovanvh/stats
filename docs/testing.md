@@ -33,6 +33,11 @@ to prove it is idempotent) and drops the database afterwards. Without `STATS_IT=
 - A non-retryable error (`VideoUnavailable`) is a 404 after one attempt, no rotation.
 - `isFree=true` gets a single attempt, no rotation.
 - `/yt-list` returns the mapped track list after a retry.
+- `/yt-list` returns `original_language_code` (`en` for a stub client without audio-track metadata and a single generated track).
+- `resolve_original_language_code`: default non-dubbed audio track wins (duplicate bitrates ignored); single non-dubbed track as fallback; no audio tracks → the single generated caption track, undetermined with two; a default track that is itself auto-dubbed → `None`; an original without a caption track → `None`.
+- `/yt-list` reads the fetcher's `adaptive_formats` and reports the original language of a dubbed video.
+- `get_youtube_api_client` installs `_AudioTrackAwareFetcher` and the pinned library still exposes `_extract_captions_json`.
+- `_AudioTrackAwareFetcher._extract_captions_json` keeps `streamingData.adaptiveFormats` and returns the captions JSON.
 
 ### `tests/test_activity_summary.py` — activity summary (stubbed client)
 - `compute_streak`: ends today, ends yesterday, 0 when neither is active, stops at a gap, capped at `STREAK_LOOKBACK_DAYS`.
