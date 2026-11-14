@@ -4,6 +4,8 @@ import pytest
 
 from scripts.apply_ddl import (
     SORTING_KEYS_SQL,
+    apply_ddl,
+    creates_table,
     expected_sorting_key,
     list_ddl_files,
     table_name,
@@ -13,6 +15,7 @@ from scripts.apply_ddl import (
 DATABASE = "stats_test"
 SINGLE_KEY_SQL = "CREATE TABLE IF NOT EXISTS t1\n(\n    `id` UInt64\n)\nENGINE = MergeTree\nORDER BY id\nSETTINGS index_granularity = 8192\n"
 TUPLE_KEY_SQL = "CREATE TABLE IF NOT EXISTS t2\n(\n    `a` Int64\n)\nENGINE = MergeTree\nORDER BY (a,  b ,c)\n"
+ALTER_SQL = "-- adds a column\nALTER TABLE t2\n    ADD COLUMN IF NOT EXISTS `d` Nullable(UInt8)\n"
 
 
 def write_files(tmp_path):
@@ -74,3 +77,39 @@ def test_verify_sorting_keys_raises_on_missing_table(tmp_path):
 
     with pytest.raises(RuntimeError, match="t2: sorting key 'None'"):
         verify_sorting_keys(client, DATABASE, write_files(tmp_path))
+
+
+def test_creates_table_tells_create_from_alter():
+    assert creates_table(TUPLE_KEY_SQL) is True
+    assert creates_table(ALTER_SQL) is False
+
+
+def test_repo_learning_activity_levels_file_is_an_idempotent_alter():
+    path = next(p for p in list_ddl_files() if p.name.endswith("learningActivity_levels.sql"))
+    sql = path.read_text()
+
+    assert creates_table(sql) is False
+    assert sql.count("\n    ADD COLUMN IF NOT EXISTS ") == 3
+
+
+def test_verify_sorting_keys_skips_alter_files(tmp_path):
+    files = write_files(tmp_path)
+    alter = tmp_path / "003_t2_extra.sql"
+    alter.write_text(ALTER_SQL)
+    client = stub_client([("t1", "id"), ("t2", "a, b, c")])
+
+    verify_sorting_keys(client, DATABASE, files + [alter])
+
+
+def test_apply_ddl_runs_alter_files_and_skips_their_key_check(tmp_path, monkeypatch):
+    files = write_files(tmp_path)
+    alter = tmp_path / "003_t2_extra.sql"
+    alter.write_text(ALTER_SQL)
+    client = stub_client([("t1", "id"), ("t2", "a, b, c")])
+    monkeypatch.setattr("scripts.apply_ddl.DDL_DIR", tmp_path)
+    monkeypatch.setattr("scripts.apply_ddl.get_clickhouse_client", lambda *args: client)
+
+    applied = apply_ddl(DATABASE)
+
+    assert applied == [files[0].name, files[1].name, alter.name]
+    assert client.command.call_args_list[-1].args == (ALTER_SQL,)

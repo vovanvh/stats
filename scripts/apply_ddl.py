@@ -2,9 +2,10 @@
 Apply the versioned ClickHouse DDL files in ddl/ in name order.
 
 Usage: docker exec krys-stats python scripts/apply_ddl.py [--database NAME]
-Every file is one idempotent CREATE ... IF NOT EXISTS statement, so re-running is safe.
-After applying, every table's sorting key is checked against its file, because IF NOT EXISTS
-keeps a stale table with an old key silently.
+Every file is one idempotent statement, so re-running is safe: either a CREATE TABLE IF NOT EXISTS
+or an ALTER TABLE ... ADD COLUMN IF NOT EXISTS that extends a table created by an earlier file.
+After applying, the sorting key of every CREATE TABLE file is checked against the live table, because
+IF NOT EXISTS keeps a stale table with an old key silently; ALTER files are skipped by that check.
 """
 import argparse
 import re
@@ -35,6 +36,13 @@ def list_ddl_files() -> List[Path]:
     return sorted(DDL_DIR.glob("*.sql"))
 
 
+def creates_table(sql: str) -> bool:
+    """
+    Tell whether one DDL file is a CREATE TABLE statement (as opposed to an ALTER TABLE file).
+    """
+    return TABLE_NAME_PATTERN.search(sql) is not None
+
+
 def table_name(sql: str) -> str:
     """
     Return the table name created by one DDL statement.
@@ -58,8 +66,8 @@ def expected_sorting_key(sql: str) -> str:
 
 def verify_sorting_keys(client, database: str, files: List[Path]) -> None:
     """
-    Compare every DDL file's sorting key with the live table and raise on the first mismatch.
-    A mismatch means the table predates a key change; it must be dropped and re-created.
+    Compare every CREATE TABLE file's sorting key with the live table and raise on the first mismatch.
+    ALTER files carry no sorting key and are skipped; a mismatch means the table predates a key change.
     """
     # Read the live sorting keys of the target database
     rows = client.query(SORTING_KEYS_SQL, parameters={"db": database}).result_rows
@@ -68,6 +76,9 @@ def verify_sorting_keys(client, database: str, files: List[Path]) -> None:
     # Fail loudly on the first table whose key differs from its file
     for path in files:
         sql = path.read_text()
+        # ALTER TABLE files only add columns, they define no sorting key
+        if not creates_table(sql):
+            continue
         name = table_name(sql)
         expected = expected_sorting_key(sql)
         actual = actual_keys.get(name)

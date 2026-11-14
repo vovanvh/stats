@@ -1,6 +1,7 @@
 -- One row per learning action (answer, review, lesson step), written through POST /stats/.
 -- ts is UTC; send it as unix epoch seconds (an ISO string fails the insert).
 -- result: -1 not graded, 0 wrong, 1 correct.
+-- materialLevel, learnerLevel and score are added by 005_learningActivity_levels.sql.
 CREATE TABLE IF NOT EXISTS learningActivity
 (
     `externalId` Int64,

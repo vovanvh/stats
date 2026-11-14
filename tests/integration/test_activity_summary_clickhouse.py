@@ -18,16 +18,24 @@ from app.services.activity_summary import (
     WEEK_LENGTH_DAYS,
     build_summary,
 )
-from scripts.apply_ddl import apply_ddl, list_ddl_files
+from scripts.apply_ddl import apply_ddl, creates_table, list_ddl_files
 
 pytestmark = pytest.mark.skipif(os.getenv("STATS_IT") != "1", reason="set STATS_IT=1 to run against ClickHouse")
 
 TEST_DATABASE = "stats_test"
+UPGRADE_DATABASE = "stats_test_upgrade"
 BERLIN = "Europe/Berlin"
 LANG = 1
 OTHER_LANG = 2
 NOT_GRADED, WRONG, CORRECT = -1, 0, 1
 ACTIVITY_COLUMNS = ["externalId", "languageId", "activityType", "entityId", "ts", "result"]
+LEVEL_COLUMNS = ACTIVITY_COLUMNS + ["materialLevel", "learnerLevel", "score"]
+READ_LEVELS_SQL = (
+    f"SELECT materialLevel, learnerLevel, score, result FROM {LEARNING_ACTIVITY_TABLE} "
+    "WHERE externalId = {user:Int64} ORDER BY ts"
+)
+NO_LEVEL = ""
+NEW_ACTIVITY_TYPES = ["quiz", "mistake-practice", "grammar-exercise"]
 MINUTE_COLUMNS = ["externalId", "languageId", "minuteTs", "platform", "appVersion"]
 EXPECTED_TABLES = {"vocabularySR", "LikeDislikeStats", APP_USAGE_MINUTE_TABLE, LEARNING_ACTIVITY_TABLE}
 APP_USAGE_MINUTE_KEY = "externalId, languageId, minuteTs"
@@ -82,7 +90,7 @@ def test_ddl_creates_all_tables(client):
     tables = {row[0] for row in client.query("SHOW TABLES").result_rows}
 
     assert tables == EXPECTED_TABLES
-    assert len(list_ddl_files()) == len(EXPECTED_TABLES)
+    assert len([p for p in list_ddl_files() if creates_table(p.read_text())]) == len(EXPECTED_TABLES)
     key = client.query(
         "SELECT sorting_key FROM system.tables WHERE database = {db:String} AND name = {t:String}",
         parameters={"db": TEST_DATABASE, "t": APP_USAGE_MINUTE_TABLE},
@@ -223,3 +231,65 @@ def test_unknown_zone_falls_back_to_utc(client):
 
     assert summary["timeZone"] == DEFAULT_TIME_ZONE
     assert active_dates(summary) == ["2026-03-28", "2026-03-29"]
+
+
+def read_levels(client, external_id):
+    """(materialLevel, learnerLevel, score, result) of one user's rows, oldest first."""
+    return client.query(READ_LEVELS_SQL, parameters={"user": external_id}).result_rows
+
+
+def test_levels_and_score_round_trip(client):
+    user = 201
+    client.insert(
+        LEARNING_ACTIVITY_TABLE,
+        [[user, LANG, "quiz", 7, utc("2026-09-01 10:00"), CORRECT, "B1", "A2", 85]],
+        LEVEL_COLUMNS,
+    )
+
+    assert read_levels(client, user) == [("B1", "A2", 85, CORRECT)]
+
+
+def test_row_without_levels_reads_empty(client):
+    user = 202
+    client.insert(LEARNING_ACTIVITY_TABLE, [[user, LANG, "dictation", 0, utc("2026-09-01 10:00"), NOT_GRADED]], ACTIVITY_COLUMNS)
+
+    assert read_levels(client, user) == [(NO_LEVEL, NO_LEVEL, None, NOT_GRADED)]
+
+
+def test_row_inserted_before_levels_file_stays_empty():
+    user = 203
+    admin = get_clickhouse_client()
+    admin.command(f"DROP DATABASE IF EXISTS {UPGRADE_DATABASE}")
+    admin.command(f"CREATE DATABASE {UPGRADE_DATABASE}")
+    try:
+        # Build the pre-005 schema: only the CREATE TABLE files
+        legacy = get_clickhouse_client(UPGRADE_DATABASE)
+        for path in list_ddl_files():
+            if creates_table(path.read_text()):
+                legacy.command(path.read_text())
+        legacy.insert(LEARNING_ACTIVITY_TABLE, [[user, LANG, "dictation", 0, utc("2026-09-01 10:00"), CORRECT]], ACTIVITY_COLUMNS)
+
+        # Apply the full ddl/ (adds the columns) and read the old row back
+        apply_ddl(UPGRADE_DATABASE)
+        upgraded = get_clickhouse_client(UPGRADE_DATABASE)
+
+        assert read_levels(upgraded, user) == [(NO_LEVEL, NO_LEVEL, None, CORRECT)]
+    finally:
+        admin.command(f"DROP DATABASE IF EXISTS {UPGRADE_DATABASE}")
+
+
+@pytest.mark.parametrize("offset, activity_type", list(enumerate(NEW_ACTIVITY_TYPES)))
+def test_new_type_day_counts_like_dictation_day(client, offset, activity_type):
+    new_user = 210 + offset
+    dictation_user = 220 + offset
+    ts = utc("2026-09-10 09:00")
+    now = utc("2026-09-10 18:00")
+    client.insert(LEARNING_ACTIVITY_TABLE, [[new_user, LANG, activity_type, 0, ts, NOT_GRADED, "B2", "B1", 60]], LEVEL_COLUMNS)
+    client.insert(LEARNING_ACTIVITY_TABLE, [[dictation_user, LANG, "dictation", 0, ts, NOT_GRADED]], ACTIVITY_COLUMNS)
+
+    new_summary = build_summary(client, new_user, LANG, BERLIN, "monday", now)
+    dictation_summary = build_summary(client, dictation_user, LANG, BERLIN, "monday", now)
+
+    assert new_summary == dictation_summary
+    assert new_summary["activeToday"] is True
+    assert new_summary["currentStreak"] == 1
