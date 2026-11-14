@@ -96,7 +96,9 @@ Main files: @app/routers/youtube.py, @app/proxy.py
 
 A single `POST /stats/` endpoint that bulk-inserts rows into any ClickHouse table. The request body carries the
 target `table` and `data`, a non-empty list of plain row objects (`List[Dict[str, Any]]`), so one path serves
-`vocabularySR` (spaced-repetition state), `LikeDislikeStats` (`{id, module, type, value}`) and any future table.
+`vocabularySR` (spaced-repetition state), `LikeDislikeStats` (`{id, module, type, value}`), `learningActivity`
+(`{externalId, languageId, activityType, entityId, ts, result, materialLevel, learnerLevel, score}`, written by
+my-nest-voc `LearningActivityService`) and any future table. Columns a row omits get their ClickHouse default.
 
 The table name (stripped) and every column key must match `IDENTIFIER_PATTERN` (`^[A-Za-z_][A-Za-z0-9_]*$`);
 otherwise the request is rejected with 422. Column ordering is the sorted union of all row keys; a key missing
@@ -161,14 +163,21 @@ Schema lives in `ddl/NNN_<table>.sql` (idempotent `CREATE TABLE IF NOT EXISTS`, 
 `vocabularySR`, `LikeDislikeStats` (snapshots of the hand-made tables), `appUsageMinute`
 (`ReplacingMergeTree ORDER BY (externalId, languageId, minuteTs)`, so a merge never collapses one language's minute
 into another's) and `learningActivity` (`MergeTree ORDER BY (externalId, ts)`, `result` -1 n/a / 0 wrong / 1 correct).
+`ddl/005_learningActivity_levels.sql` (VBM-585) is an `ALTER TABLE learningActivity ADD COLUMN IF NOT EXISTS` file:
+`materialLevel` and `learnerLevel` (`LowCardinality(String) DEFAULT ''`, CEFR label `A1`..`C2`, `''` = unknown) and
+`score` (`Nullable(UInt8)`, 0–100, `NULL` = not scored). Rows written before it, or without these keys, read `''`,
+`''`, `NULL`. The activity summary ignores these columns and every `activityType`: any row makes its day active.
 `scripts/apply_ddl.py [--database NAME]` creates the database if missing and applies the files in name order, then
-compares every table's `system.tables.sorting_key` with its file's `ORDER BY` and exits non-zero on a mismatch
-(`IF NOT EXISTS` would otherwise keep a stale table silently; drop it and re-run). `scripts/deploy.sh` runs it on every prod deploy (`krys-stats-prod`), so `ddl/`
-must stay additive and idempotent (no `ALTER` without applied-file tracking).
+compares the `system.tables.sorting_key` of every `CREATE TABLE` file's table with its `ORDER BY` and exits non-zero
+on a mismatch (`IF NOT EXISTS` would otherwise keep a stale table silently; drop it and re-run); `ALTER` files are
+skipped by that check. `scripts/deploy.sh` runs it on every prod deploy (`krys-stats-prod`), so `ddl/` must stay
+additive and idempotent: a new column is an `ALTER ... ADD COLUMN IF NOT EXISTS` file, never a destructive `ALTER`
+(there is no applied-file tracking). Deploy a new column here before the writer that sends it.
 Writers must send `DateTime` columns as unix epoch seconds through `POST /stats/`.
 
-Tests: `tests/test_activity_summary.py` (stubbed client), `tests/test_apply_ddl.py` (sorting-key guard) and
+Tests: `tests/test_activity_summary.py` (stubbed client), `tests/test_apply_ddl.py` (sorting-key guard, ALTER files) and
 `tests/integration/test_activity_summary_clickhouse.py` (real ClickHouse, `STATS_IT=1`, DST / 00:30 /
-duplicate-minute / language-isolation fixtures, also after `OPTIMIZE ... FINAL`) — see `docs/testing.md`.
+duplicate-minute / language-isolation fixtures, also after `OPTIMIZE ... FINAL`; levels / score round-trip and
+upgrade of a pre-`005` row) — see `docs/testing.md`.
 
 Main files: @app/routers/activity_summary.py, @app/services/activity_summary.py, @scripts/apply_ddl.py, @ddl/

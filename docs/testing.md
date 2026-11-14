@@ -16,7 +16,7 @@ docker exec krys-stats sh -c 'STATS_IT=1 python -m pytest -q tests'
 ```
 
 The integration suite creates the database `stats_test`, applies `ddl/` through `scripts/apply_ddl.py` (twice,
-to prove it is idempotent) and drops the database afterwards. Without `STATS_IT=1` it is skipped.
+to prove it is idempotent) and drops the database afterwards; the upgrade case does the same with `stats_test_upgrade`. Without `STATS_IT=1` it is skipped.
 
 ## Suites
 
@@ -54,9 +54,12 @@ to prove it is idempotent) and drops the database afterwards. Without `STATS_IT=
 - `table_name` reads the table of a `CREATE TABLE IF NOT EXISTS` statement.
 - The repo's `appUsageMinute` file is keyed `externalId, languageId, minuteTs`.
 - `verify_sorting_keys` passes on a match and raises on a stale key or a missing table.
+- `creates_table` tells a `CREATE TABLE` file from an `ALTER TABLE` file.
+- The repo's `learningActivity_levels` file is an `ALTER` adding three columns with `ADD COLUMN IF NOT EXISTS`.
+- `verify_sorting_keys` skips `ALTER` files; `apply_ddl` still runs them, in name order.
 
 ### `tests/integration/test_activity_summary_clickhouse.py` — real ClickHouse (`STATS_IT=1`)
-- `ddl/` creates exactly the four tables on a fresh database; `appUsageMinute` is keyed `externalId, languageId, minuteTs`.
+- `ddl/` creates exactly the four tables on a fresh database (one per `CREATE TABLE` file); `appUsageMinute` is keyed `externalId, languageId, minuteTs`.
 - DST spring (`Europe/Berlin`, 2026-03-29): 00:30-local rows land on the local day; streak, minutes, accuracy.
 - The same rows read in `UTC` land on the UTC days.
 - DST autumn (2026-10-25): 00:30-local rows before and after the switch land on the local days.
@@ -66,3 +69,7 @@ to prove it is idempotent) and drops the database afterwards. Without `STATS_IT=
 - Language isolation: rows in language 2 never change language 1 numbers.
 - Language isolation survives a merge: the same `minuteTs` in two languages is still one minute each after `OPTIMIZE ... FINAL`.
 - Unknown zone falls back to `UTC`.
+- A `learningActivity` row with `materialLevel`, `learnerLevel` and `score` reads them back unchanged, next to `result`.
+- A row without them reads `''`, `''`, `NULL`.
+- A row inserted before `005` (database `stats_test_upgrade`, dropped afterwards) reads `''`, `''`, `NULL` once `ddl/` is applied.
+- A day with only a `quiz`, `mistake-practice` or `grammar-exercise` row gives the same summary as a day with only a `dictation` row.
