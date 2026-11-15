@@ -1,8 +1,19 @@
 import asyncio
-from fastapi import APIRouter, HTTPException, Query
-from typing import Any, Callable, Dict, Iterable, List, Optional
+from enum import Enum
+from fastapi import APIRouter, Query
+from fastapi.responses import JSONResponse
+from typing import Any, Callable, Dict, Iterable, List, Optional, Tuple, Type
 from requests.exceptions import ConnectionError as RequestsConnectionError, Timeout as RequestsTimeout
-from youtube_transcript_api import YouTubeTranscriptApi, RequestBlocked
+from youtube_transcript_api import (
+    AgeRestricted,
+    InvalidVideoId,
+    NoTranscriptFound,
+    RequestBlocked,
+    TranscriptsDisabled,
+    VideoUnavailable,
+    VideoUnplayable,
+    YouTubeTranscriptApi,
+)
 from youtube_transcript_api._transcripts import TranscriptListFetcher
 from youtube_transcript_api.proxies import GenericProxyConfig
 from app.proxy import get_proxy, rotate_session
@@ -15,6 +26,43 @@ _MAX_YT_ATTEMPTS = 3
 # An innertube audio track id is "<language>.<n>" (e.g. "en-US.4"); the language part may carry a region
 _AUDIO_TRACK_ID_SEPARATOR = "."
 _LANG_REGION_SEPARATOR = "-"
+
+# Keys of the JSON body every `/yt` / `/yt-list` error answers with
+ERROR_DETAIL_KEY = "detail"
+ERROR_REASON_KEY = "reason"
+
+# HTTP statuses of the error answers (unchanged by VBM-593)
+_STATUS_NOT_FOUND = 404
+_STATUS_BLOCKED = 429
+_STATUS_UNREACHABLE = 503
+
+
+class YtErrorReason(str, Enum):
+    """
+    Machine-readable cause of a `/yt` / `/yt-list` error, sent as `reason` next to `detail`.
+    The first five are definitive for callers (never worth a retry); the rest are not.
+    """
+
+    VIDEO_UNAVAILABLE = "video_unavailable"
+    TRANSCRIPTS_DISABLED = "transcripts_disabled"
+    NO_TRANSCRIPT = "no_transcript"
+    AGE_RESTRICTED = "age_restricted"
+    INVALID_VIDEO_ID = "invalid_video_id"
+    VIDEO_UNPLAYABLE = "video_unplayable"
+    OTHER = "other"
+    REQUEST_BLOCKED = "request_blocked"
+    CONNECTION_ERROR = "connection_error"
+
+
+# Library error class -> 404 reason; checked by type before any text check
+_LIBRARY_ERROR_REASONS: Tuple[Tuple[Type[Exception], YtErrorReason], ...] = (
+    (VideoUnavailable, YtErrorReason.VIDEO_UNAVAILABLE),
+    (TranscriptsDisabled, YtErrorReason.TRANSCRIPTS_DISABLED),
+    (NoTranscriptFound, YtErrorReason.NO_TRANSCRIPT),
+    (AgeRestricted, YtErrorReason.AGE_RESTRICTED),
+    (InvalidVideoId, YtErrorReason.INVALID_VIDEO_ID),
+    (VideoUnplayable, YtErrorReason.VIDEO_UNPLAYABLE),
+)
 
 
 class _AudioTrackAwareFetcher(TranscriptListFetcher):
@@ -147,29 +195,57 @@ async def _run_with_rotation(label: str, is_free: bool, op: Callable[[YouTubeTra
     raise last_exc
 
 
-def _to_http_error(label: str, exc: Exception, is_free: bool) -> HTTPException:
+def _library_reason(exc: Exception) -> Optional[YtErrorReason]:
     """
-    Map a YouTube/proxy exception to the endpoint's HTTP error:
-    503 for connection/proxy failures, 429 for YouTube IP blocks, 404 otherwise.
+    Reason code of a mapped youtube-transcript-api error, matched by type.
+    None when the error is not one of the mapped library classes.
+    """
+    # First matching class wins; the mapped classes do not inherit from each other
+    for error_class, reason in _LIBRARY_ERROR_REASONS:
+        if isinstance(exc, error_class):
+            return reason
+    return None
+
+
+def _error_response(status_code: int, detail: str, reason: YtErrorReason) -> JSONResponse:
+    """Build the `{detail, reason}` error body of `/yt` and `/yt-list`."""
+    return JSONResponse(status_code=status_code, content={ERROR_DETAIL_KEY: detail, ERROR_REASON_KEY: reason.value})
+
+
+def _to_error_response(label: str, exc: Exception, is_free: bool) -> JSONResponse:
+    """
+    Map a YouTube/proxy exception to the endpoint's error answer `{detail, reason}`:
+    mapped library errors give 404 with their reason first, then 429 for IP blocks,
+    503 for connection/proxy failures and 404 `other` for everything else.
     """
     error_msg = str(exc)
     attempts = 1 if is_free else _MAX_YT_ATTEMPTS
+
+    # Known library errors are classified by type, before any text match can misread them
+    reason = _library_reason(exc)
+    if reason is not None:
+        print(f"[{label}] Error ({reason.value}): {error_msg}")
+        return _error_response(_STATUS_NOT_FOUND, error_msg, reason)
 
     # YouTube blocked every exit IP we tried
     if isinstance(exc, RequestBlocked) or "IpBlocked" in error_msg or "429" in error_msg:
         print(f"[{label}] IP blocked by YouTube: {error_msg}")
         if is_free:
-            return HTTPException(status_code=429, detail="YouTube has blocked this IP. Try requesting a new Tor identity via POST /proxy/new-identity?isFree=true")
-        return HTTPException(status_code=429, detail=f"YouTube blocked the proxy IP on all {attempts} attempt(s), each with a rotated session.")
+            detail = "YouTube has blocked this IP. Try requesting a new Tor identity via POST /proxy/new-identity?isFree=true"
+        else:
+            detail = f"YouTube blocked the proxy IP on all {attempts} attempt(s), each with a rotated session."
+        return _error_response(_STATUS_BLOCKED, detail, YtErrorReason.REQUEST_BLOCKED)
 
     # Proxy or network failure on every attempt
     if isinstance(exc, (RequestsConnectionError, RequestsTimeout)) or "Connection" in error_msg or "timeout" in error_msg.lower():
         print(f"[{label}] Connection error: {error_msg}")
-        return HTTPException(status_code=503, detail=f"Connection error after {attempts} attempt(s): {error_msg}")
+        return _error_response(
+            _STATUS_UNREACHABLE, f"Connection error after {attempts} attempt(s): {error_msg}", YtErrorReason.CONNECTION_ERROR
+        )
 
-    # Anything else (no transcript, video unavailable, ...)
+    # Anything else (unparsable data, PO token, other request failures, ...)
     print(f"[{label}] Error: {error_msg}")
-    return HTTPException(status_code=404, detail=error_msg)
+    return _error_response(_STATUS_NOT_FOUND, error_msg, YtErrorReason.OTHER)
 
 
 @router.get("")
@@ -189,7 +265,8 @@ async def get_youtube_transcript(
         )
         return {"transcript": transcript}
     except Exception as e:
-        raise _to_http_error("YT", e, isFree)
+        # Answer `{detail, reason}` with the classified status
+        return _to_error_response("YT", e, isFree)
 
 
 @router.get("-list")
@@ -229,4 +306,5 @@ async def get_available_transcripts(
     try:
         return await _run_with_rotation("YT-LIST", isFree, list_tracks)
     except Exception as e:
-        raise _to_http_error("YT-LIST", e, isFree)
+        # Answer `{detail, reason}` with the classified status
+        return _to_error_response("YT-LIST", e, isFree)

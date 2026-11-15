@@ -67,6 +67,25 @@ return 503, YouTube IP bans return 429 with a hint to rotate the proxy identity)
 `get_youtube_api_client`. When an IP ban is hit, the error message links the caller directly to the
 `POST /proxy/new-identity` endpoint to get a new exit IP.
 
+Both endpoints share `_run_with_rotation`, which retries up to `_MAX_YT_ATTEMPTS` (3) times on the paid proxy.
+Before each retry it calls `rotate_session()`, and the client is rebuilt each attempt, so a dead or blocked
+residential exit node (e.g. FloppyData's `Tunnel connection failed: 504 Gateway Time-out`) no longer fails every
+request until someone rotates by hand. Retryable errors (`_is_retryable`) are `requests` `ConnectionError`/`Timeout`
+(incl. `ProxyError`) and `RequestBlocked`/`IpBlocked`. Anything else (no transcript, video unavailable) fails fast
+with 404. Tor gets a single attempt. `_to_error_response` maps the final error to 429 (blocked), 503 (connection) or 404.
+The synchronous `requests` call runs in `asyncio.to_thread`, so retries never block the event loop or `/health`.
+As with scraping, the session ID is global, so a rotation also changes the exit IP for concurrent requests.
+
+Every error answer is `{"detail": "<text>", "reason": "<code>"}` (VBM-593); `detail` keeps the old text, `reason` is a
+`YtErrorReason` value. `_to_error_response` first matches `_LIBRARY_ERROR_REASONS` by type, so a mapped library error
+is always a 404 even when its text contains `429` / `Connection` / `timeout`: `VideoUnavailable` → `video_unavailable`,
+`TranscriptsDisabled` → `transcripts_disabled`, `NoTranscriptFound` → `no_transcript` (`/yt` only), `AgeRestricted` →
+`age_restricted`, `InvalidVideoId` → `invalid_video_id`, `VideoUnplayable` → `video_unplayable` (private, removed,
+members-only, upcoming live; the cause is in `detail`). Then the unchanged checks give 429 `request_blocked` and 503
+`connection_error`; everything else is 404 `other`. Callers may treat the first five codes as definitive (never retry);
+`video_unplayable`, `other`, `request_blocked`, `connection_error` and a missing `reason` are not. A library bump that
+adds an error class is caught by the completeness test in `tests/test_youtube.py`.
+
 `GET /yt-list` also returns `original_language_code` (VBM-499). Auto-dubbed videos expose one auto-generated
 caption track per dubbed audio track, all alike and sorted alphabetically, so a caller taking the first one gets a
 machine translation. `youtube-transcript-api` 1.2.3 makes a single innertube `/youtubei/v1/player` request and keeps
