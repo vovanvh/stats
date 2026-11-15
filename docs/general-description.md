@@ -414,6 +414,7 @@ proxies = {
 - IP blocked on every attempt (429): `request_blocked`
 - Proxy or network failure on every attempt, paid proxy or Tor (503): `connection_error`
 - Not found (404): `video_unavailable`, `transcripts_disabled`, `no_transcript`, `age_restricted`, `invalid_video_id`, `video_unplayable` or `other`
+- A video removed for good (by the uploader, or for a policy, copyright or account-termination reason) answers 404 `video_unavailable`, not `video_unplayable` (VBM-597)
 - Logs all errors for debugging
 
 ##### 5. Available Transcripts Endpoint
@@ -455,6 +456,7 @@ GET /yt-list?videoId={video_id}
 - IP blocked on every attempt (429): `request_blocked`
 - Proxy or network failure on every attempt (503): `connection_error`
 - Not found (404): `video_unavailable`, `transcripts_disabled`, `age_restricted`, `invalid_video_id`, `video_unplayable` or `other`
+- A video removed for good (by the uploader, or for a policy, copyright or account-termination reason) answers 404 `video_unavailable`, not `video_unplayable` (VBM-597)
 - Detailed logging for troubleshooting
 
 ### 4. Docker Configuration

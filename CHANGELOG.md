@@ -18,6 +18,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - `POST /stats/` accepts rows of any table (`data: List[Dict[str, Any]]`); `LikeDislikeStats` rows were rejected with 422 before (VBM-242).
 
 ### Changed
+- `/yt` and `/yt-list`: a `VideoUnplayable` removed for good (by the uploader, or for a policy, copyright or account-termination reason) answers 404 `video_unavailable` instead of `video_unplayable`; matched cause texts live in `_REMOVED_VIDEO_CAUSE_MARKERS` (VBM-597).
 - `POST /stats/` validates `table` and every column key as a bare identifier (422) and returns 500 with the ClickHouse error detail when the insert fails.
 
 ### Added

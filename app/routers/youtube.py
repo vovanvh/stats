@@ -64,6 +64,20 @@ _LIBRARY_ERROR_REASONS: Tuple[Tuple[Type[Exception], YtErrorReason], ...] = (
     (VideoUnplayable, YtErrorReason.VIDEO_UNPLAYABLE),
 )
 
+# Lower-case fragments of a `VideoUnplayable` cause that mean the video is gone for good (VBM-597);
+# such a video answers `video_unavailable` instead of `video_unplayable`. Covered YouTube texts:
+# - "has been removed": "This video has been removed by the uploader", "...removed for violating
+#   YouTube's Terms of Service / Community Guidelines", "...removed for violating YouTube's policy..."
+# - "no longer available": "...no longer available due to a copyright claim by X", "...because the YouTube
+#   account associated with this video has been terminated", "...has been closed"
+# - "blocked it on copyright grounds": "...who has blocked it on copyright grounds" (not the geo-only
+#   "blocked it in your country on copyright grounds", which stays `video_unplayable`)
+_REMOVED_VIDEO_CAUSE_MARKERS: Tuple[str, ...] = (
+    "has been removed",
+    "no longer available",
+    "blocked it on copyright grounds",
+)
+
 
 class _AudioTrackAwareFetcher(TranscriptListFetcher):
     """
@@ -195,14 +209,31 @@ async def _run_with_rotation(label: str, is_free: bool, op: Callable[[YouTubeTra
     raise last_exc
 
 
+def _is_removed_video(exc: Exception) -> bool:
+    """
+    True when an unplayable error's cause (`reason` or any `sub_reasons` item) says the video
+    was removed for good; matched case-insensitively against _REMOVED_VIDEO_CAUSE_MARKERS.
+    """
+    # Collect the cause texts; bare instances may lack both attributes
+    causes = [getattr(exc, "reason", None), *(getattr(exc, "sub_reasons", None) or [])]
+    texts = [str(cause).lower() for cause in causes if cause]
+
+    # Any marker in any cause text marks the video as removed
+    return any(marker in text for text in texts for marker in _REMOVED_VIDEO_CAUSE_MARKERS)
+
+
 def _library_reason(exc: Exception) -> Optional[YtErrorReason]:
     """
     Reason code of a mapped youtube-transcript-api error, matched by type.
+    An unplayable video whose cause says it was removed gives `video_unavailable`.
     None when the error is not one of the mapped library classes.
     """
     # First matching class wins; the mapped classes do not inherit from each other
     for error_class, reason in _LIBRARY_ERROR_REASONS:
         if isinstance(exc, error_class):
+            # A removed video is gone for good, so it gets the definitive reason
+            if reason is YtErrorReason.VIDEO_UNPLAYABLE and _is_removed_video(exc):
+                return YtErrorReason.VIDEO_UNAVAILABLE
             return reason
     return None
 

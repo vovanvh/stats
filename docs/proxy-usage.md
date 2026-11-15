@@ -46,7 +46,8 @@ Every error answer is `{"detail": "<text>", "reason": "<code>"}`; the status cod
 
 - 404 `video_unavailable`, `transcripts_disabled`, `no_transcript` (`/yt` only), `age_restricted`, `invalid_video_id` —
   definitive, retrying never helps.
-- 404 `video_unplayable` (private, removed, members-only, upcoming live; cause in `detail`) and 404 `other` — not definitive.
+- 404 `video_unplayable` (private, members-only, upcoming live, geo-blocked; cause in `detail`) and 404 `other` — not definitive.
+- A video removed for good (by the uploader, or for a policy, copyright or account-termination reason) answers 404 `video_unavailable` (VBM-597).
 - 429 `request_blocked` — YouTube blocked every exit IP tried.
 - 503 `connection_error` — proxy or network failure on every attempt.
 
@@ -260,7 +261,7 @@ curl -X POST "http://localhost:8000/proxy/new-identity?isFree=true"
 ### Error Handling Best Practices
 
 1. **Always handle 429 errors** - Rotate IP and retry
-1. **Read `reason` on `/yt` and `/yt-list` errors** - never retry a definitive 404 code
-2. **Implement exponential backoff** - Wait 1s, 2s, 4s between retries
-3. **Set reasonable timeouts** - YouTube pages can be slow (use 60000ms+)
-4. **Monitor proxy health** - Periodically call `/proxy/test` to verify connectivity
+2. **Read `reason` on `/yt` and `/yt-list` errors** - never retry a definitive 404 code
+3. **Implement exponential backoff** - Wait 1s, 2s, 4s between retries
+4. **Set reasonable timeouts** - YouTube pages can be slow (use 60000ms+)
+5. **Monitor proxy health** - Periodically call `/proxy/test` to verify connectivity

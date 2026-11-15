@@ -197,6 +197,52 @@ def test_unavailable_video_whose_id_contains_429_is_still_404(api, client_mock, 
     assert res.json()["reason"] == "video_unavailable"
 
 
+# --- removed videos answer the definitive reason (VBM-597) ---
+
+# (reason, sub_reasons) of an unplayable video removed for good -> `video_unavailable`
+_REMOVED_CAUSES = [
+    ("This video has been removed by the uploader", []),
+    ("This video has been removed for violating YouTube's Terms of Service", []),
+    ("This video is no longer available due to a copyright claim by Some Label", []),
+    ("This video is no longer available because the YouTube account associated with this video has been terminated.", []),
+    ("Video unavailable", ["This video contains content from Some Label, who has blocked it on copyright grounds"]),
+    ("THIS VIDEO HAS BEEN REMOVED BY THE UPLOADER", []),
+]
+
+# (reason, sub_reasons) of an unplayable video that may still play later -> `video_unplayable`
+_STILL_UNPLAYABLE_CAUSES = [
+    ("This video is private", []),
+    ("Join this channel to get access to members-only content like this video, and other exclusive perks.", []),
+    ("This live event will begin in 2 hours.", []),
+    ("Video unavailable", ["The uploader has not made this video available in your country"]),
+    ("Video unavailable", ["This video contains content from Some Label, who has blocked it in your country on copyright grounds"]),
+    (None, []),
+]
+
+
+@pytest.mark.parametrize("endpoint", _ENDPOINTS, ids=[e[0] for e in _ENDPOINTS])
+@pytest.mark.parametrize(
+    "cause,sub_reasons,reason",
+    [(c, s, "video_unavailable") for c, s in _REMOVED_CAUSES] + [(c, s, "video_unplayable") for c, s in _STILL_UNPLAYABLE_CAUSES],
+    ids=[f"removed-{i}" for i in range(len(_REMOVED_CAUSES))] + [f"unplayable-{i}" for i in range(len(_STILL_UNPLAYABLE_CAUSES))],
+)
+def test_unplayable_cause_decides_the_reason(api, client_mock, rotate_mock, endpoint, cause, sub_reasons, reason):
+    error = VideoUnplayable(VIDEO_ID, cause, sub_reasons)
+
+    res, call = _call_failing(api, client_mock, endpoint, error)
+
+    assert res.status_code == 404
+    assert res.json() == {"detail": str(error), "reason": reason}
+    assert call.call_count == 1
+    rotate_mock.assert_not_called()
+
+
+def test_removed_video_markers_are_lower_case_fragments():
+    markers = youtube._REMOVED_VIDEO_CAUSE_MARKERS
+    assert markers and len(markers) == len(set(markers))
+    assert all(marker and marker == marker.lower() for marker in markers)
+
+
 def _all_subclasses(cls):
     """Every direct and indirect subclass of `cls`."""
     found = []
