@@ -26,11 +26,16 @@ to prove it is idempotent) and drops the database afterwards; the upgrade case d
 - Missing / empty / qualified / injected table names, bad column keys and empty `data` are 422.
 - An insert failure is a 500 carrying the ClickHouse message.
 
-### `tests/test_youtube.py` — `/yt`, `/yt-list` retry with proxy rotation (stubbed client)
+### `tests/test_youtube.py` — `/yt`, `/yt-list` retry with proxy rotation and error reasons (stubbed client)
 - A `ProxyError` (gateway 504 tunnel failure) is retried on a rotated session and then succeeds.
 - `ProxyError` on every attempt is a 503 after `_MAX_YT_ATTEMPTS` attempts with `_MAX_YT_ATTEMPTS - 1` rotations.
-- `IpBlocked` is retried on a rotated session; blocked on every attempt is a 429.
+- `IpBlocked` is retried on a rotated session; `IpBlocked` / `RequestBlocked` on every attempt is a 429 `request_blocked`; the 503s carry `connection_error`.
 - A non-retryable error (`VideoUnavailable`) is a 404 after one attempt, no rotation.
+- On both endpoints each mapped library error (`VideoUnavailable`, `TranscriptsDisabled`, `NoTranscriptFound`, `AgeRestricted`, `InvalidVideoId`, `VideoUnplayable`) is a 404 with its `reason` and `detail == str(exc)` after one attempt, no rotation.
+- `YouTubeDataUnparsable`, `PoTokenRequired`, `YouTubeRequestFailed` (403) and a plain `ValueError` are a 404 `other` on both endpoints.
+- `IpBlocked` is a 429 `request_blocked` and `ProxyError` a 503 `connection_error` on both endpoints.
+- A `VideoUnavailable` whose video id contains `429` is still a 404 `video_unavailable`.
+- Every `CouldNotRetrieveTranscript` subclass of the pinned library matches at most one mapped class and resolves to exactly one code.
 - `isFree=true` gets a single attempt, no rotation.
 - `/yt-list` returns the mapped track list after a retry.
 - `/yt-list` returns `original_language_code` (`en` for a stub client without audio-track metadata and a single generated track).

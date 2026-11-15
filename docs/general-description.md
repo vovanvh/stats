@@ -410,9 +410,10 @@ proxies = {
 }
 ```
 
-**Error Handling**:
-- Connection errors (503): Tor-related connectivity issues
-- Not found errors (404): Video or transcript not available
+**Error Handling** (body `{"detail": "<text>", "reason": "<code>"}`):
+- IP blocked on every attempt (429): `request_blocked`
+- Proxy or network failure on every attempt, paid proxy or Tor (503): `connection_error`
+- Not found (404): `video_unavailable`, `transcripts_disabled`, `no_transcript`, `age_restricted`, `invalid_video_id`, `video_unplayable` or `other`
 - Logs all errors for debugging
 
 ##### 5. Available Transcripts Endpoint
@@ -450,9 +451,10 @@ GET /yt-list?videoId={video_id}
 }
 ```
 
-**Error Handling**:
-- Connection errors (503): Proxy or network issues
-- Not found errors (404): Video not found
+**Error Handling** (body `{"detail": "<text>", "reason": "<code>"}`):
+- IP blocked on every attempt (429): `request_blocked`
+- Proxy or network failure on every attempt (503): `connection_error`
+- Not found (404): `video_unavailable`, `transcripts_disabled`, `age_restricted`, `invalid_video_id`, `video_unplayable` or `other`
 - Detailed logging for troubleshooting
 
 ### 4. Docker Configuration

@@ -4,8 +4,22 @@ from unittest.mock import MagicMock
 import pytest
 from fastapi import FastAPI
 from fastapi.testclient import TestClient
+from requests import HTTPError
 from requests.exceptions import ProxyError
-from youtube_transcript_api import IpBlocked, VideoUnavailable
+from youtube_transcript_api import (
+    AgeRestricted,
+    CouldNotRetrieveTranscript,
+    InvalidVideoId,
+    IpBlocked,
+    NoTranscriptFound,
+    PoTokenRequired,
+    RequestBlocked,
+    TranscriptsDisabled,
+    VideoUnavailable,
+    VideoUnplayable,
+    YouTubeDataUnparsable,
+    YouTubeRequestFailed,
+)
 
 from app.routers import youtube
 
@@ -60,6 +74,7 @@ def test_proxy_error_on_every_attempt_is_503(api, client_mock, rotate_mock):
 
     assert res.status_code == 503
     assert f"after {youtube._MAX_YT_ATTEMPTS} attempt(s)" in res.json()["detail"]
+    assert res.json()["reason"] == "connection_error"
     assert client_mock.fetch.call_count == youtube._MAX_YT_ATTEMPTS
     assert rotate_mock.call_count == youtube._MAX_YT_ATTEMPTS - 1
 
@@ -73,12 +88,14 @@ def test_ip_block_is_retried_on_a_rotated_session(api, client_mock, rotate_mock)
     rotate_mock.assert_called_once()
 
 
-def test_ip_block_on_every_attempt_is_429(api, client_mock, rotate_mock):
-    client_mock.fetch.side_effect = IpBlocked(VIDEO_ID)
+@pytest.mark.parametrize("error_class", [IpBlocked, RequestBlocked])
+def test_ip_block_on_every_attempt_is_429(api, client_mock, rotate_mock, error_class):
+    client_mock.fetch.side_effect = error_class(VIDEO_ID)
 
     res = api.get("/yt", params={"videoId": VIDEO_ID, "language": "en"})
 
     assert res.status_code == 429
+    assert res.json()["reason"] == "request_blocked"
     assert client_mock.fetch.call_count == youtube._MAX_YT_ATTEMPTS
 
 
@@ -98,8 +115,114 @@ def test_tor_gets_a_single_attempt_without_rotation(api, client_mock, rotate_moc
     res = api.get("/yt", params={"videoId": VIDEO_ID, "language": "en", "isFree": "true"})
 
     assert res.status_code == 503
+    assert res.json()["reason"] == "connection_error"
     assert client_mock.fetch.call_count == 1
     rotate_mock.assert_not_called()
+
+
+# --- machine-readable error reason (VBM-593) ---
+
+# One endpoint call per route; `/yt-list` errors come from `list`, `/yt` errors from `fetch`
+_ENDPOINTS = [
+    ("/yt", {"videoId": VIDEO_ID, "language": "en"}, "fetch"),
+    ("/yt-list", {"videoId": VIDEO_ID}, "list"),
+]
+
+# Each mapped library error with the reason it must answer
+_MAPPED_ERRORS = [
+    (lambda vid: VideoUnavailable(vid), "video_unavailable"),
+    (lambda vid: TranscriptsDisabled(vid), "transcripts_disabled"),
+    (lambda vid: NoTranscriptFound(vid, ["en"], "tracks"), "no_transcript"),
+    (lambda vid: AgeRestricted(vid), "age_restricted"),
+    (lambda vid: InvalidVideoId(vid), "invalid_video_id"),
+    (lambda vid: VideoUnplayable(vid, "Private video", []), "video_unplayable"),
+]
+
+
+def _call_failing(api, client_mock, endpoint, error, video_id=VIDEO_ID):
+    """Make the endpoint's client call raise `error` and return the HTTP answer."""
+    path, params, method = endpoint
+    getattr(client_mock, method).side_effect = error
+    return api.get(path, params={**params, "videoId": video_id}), getattr(client_mock, method)
+
+
+@pytest.mark.parametrize("endpoint", _ENDPOINTS, ids=[e[0] for e in _ENDPOINTS])
+@pytest.mark.parametrize("make_error,reason", _MAPPED_ERRORS, ids=[r for _, r in _MAPPED_ERRORS])
+def test_mapped_library_error_is_404_with_its_reason(api, client_mock, rotate_mock, endpoint, make_error, reason):
+    error = make_error(VIDEO_ID)
+
+    res, call = _call_failing(api, client_mock, endpoint, error)
+
+    assert res.status_code == 404
+    assert res.json() == {"detail": str(error), "reason": reason}
+    assert call.call_count == 1
+    rotate_mock.assert_not_called()
+
+
+@pytest.mark.parametrize("endpoint", _ENDPOINTS, ids=[e[0] for e in _ENDPOINTS])
+@pytest.mark.parametrize(
+    "error",
+    [
+        YouTubeDataUnparsable(VIDEO_ID),
+        PoTokenRequired(VIDEO_ID),
+        YouTubeRequestFailed(VIDEO_ID, HTTPError("403 Client Error: Forbidden")),
+        ValueError("unexpected"),
+    ],
+    ids=["unparsable", "po_token", "request_failed_403", "value_error"],
+)
+def test_unmapped_error_is_404_other(api, client_mock, rotate_mock, endpoint, error):
+    res, call = _call_failing(api, client_mock, endpoint, error)
+
+    assert res.status_code == 404
+    assert res.json() == {"detail": str(error), "reason": "other"}
+    assert call.call_count == 1
+
+
+@pytest.mark.parametrize("endpoint", _ENDPOINTS, ids=[e[0] for e in _ENDPOINTS])
+def test_block_and_connection_errors_carry_their_reason_on_both_endpoints(api, client_mock, rotate_mock, endpoint):
+    res, _ = _call_failing(api, client_mock, endpoint, IpBlocked(VIDEO_ID))
+    assert (res.status_code, res.json()["reason"]) == (429, "request_blocked")
+
+    res, _ = _call_failing(api, client_mock, endpoint, ProxyError("Tunnel connection failed"))
+    assert (res.status_code, res.json()["reason"]) == (503, "connection_error")
+
+
+def test_unavailable_video_whose_id_contains_429_is_still_404(api, client_mock, rotate_mock):
+    video_id = "ab429Connec"
+    error = VideoUnavailable(video_id)
+
+    res, _ = _call_failing(api, client_mock, _ENDPOINTS[1], error, video_id=video_id)
+
+    assert res.status_code == 404
+    assert res.json()["reason"] == "video_unavailable"
+
+
+def _all_subclasses(cls):
+    """Every direct and indirect subclass of `cls`."""
+    found = []
+    for sub in cls.__subclasses__():
+        found.append(sub)
+        found.extend(_all_subclasses(sub))
+    return found
+
+
+def test_every_library_error_class_gets_exactly_one_reason():
+    mapped = [error_class for error_class, _ in youtube._LIBRARY_ERROR_REASONS]
+    assert len(mapped) == len(set(mapped))
+
+    for error_class in _all_subclasses(CouldNotRetrieveTranscript):
+        # At most one mapped class matches, so the map order never decides a code
+        matches = [m for m in mapped if issubclass(error_class, m)]
+        assert len(matches) <= 1, error_class
+
+        # A bare instance of the class still resolves to exactly one known code
+        error = error_class.__new__(error_class)
+        error.video_id = VIDEO_ID
+        reason = youtube._library_reason(error)
+        if reason is None:
+            assert matches == []
+        else:
+            assert reason in youtube.YtErrorReason
 
 
 def test_list_returns_mapped_tracks_after_a_retry(api, client_mock, rotate_mock):
