@@ -35,6 +35,8 @@ to prove it is idempotent) and drops the database afterwards; the upgrade case d
 - `YouTubeDataUnparsable`, `PoTokenRequired`, `YouTubeRequestFailed` (403) and a plain `ValueError` are a 404 `other` on both endpoints.
 - `IpBlocked` is a 429 `request_blocked` and `ProxyError` a 503 `connection_error` on both endpoints.
 - A `VideoUnavailable` whose video id contains `429` is still a 404 `video_unavailable`.
+- On both endpoints a `VideoUnplayable` removed for good (by the uploader, Terms of Service, copyright claim, terminated account, a `sub_reasons` "blocked it on copyright grounds", an upper-case cause) is a 404 `video_unavailable`; private, members-only, upcoming live, geo-blocked (incl. country copyright block) and a `None` cause stay `video_unplayable`.
+- `_REMOVED_VIDEO_CAUSE_MARKERS` holds unique, non-empty lower-case fragments.
 - Every `CouldNotRetrieveTranscript` subclass of the pinned library matches at most one mapped class and resolves to exactly one code.
 - `isFree=true` gets a single attempt, no rotation.
 - `/yt-list` returns the mapped track list after a retry.

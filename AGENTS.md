@@ -80,8 +80,10 @@ Every error answer is `{"detail": "<text>", "reason": "<code>"}` (VBM-593); `det
 `YtErrorReason` value. `_to_error_response` first matches `_LIBRARY_ERROR_REASONS` by type, so a mapped library error
 is always a 404 even when its text contains `429` / `Connection` / `timeout`: `VideoUnavailable` → `video_unavailable`,
 `TranscriptsDisabled` → `transcripts_disabled`, `NoTranscriptFound` → `no_transcript` (`/yt` only), `AgeRestricted` →
-`age_restricted`, `InvalidVideoId` → `invalid_video_id`, `VideoUnplayable` → `video_unplayable` (private, removed,
-members-only, upcoming live; the cause is in `detail`). Then the unchanged checks give 429 `request_blocked` and 503
+`age_restricted`, `InvalidVideoId` → `invalid_video_id`, `VideoUnplayable` → `video_unplayable` (private,
+members-only, upcoming live, geo-blocked; the cause is in `detail`). A `VideoUnplayable` whose `reason` or a
+`sub_reasons` item contains one of `_REMOVED_VIDEO_CAUSE_MARKERS` (case-insensitive: removed by the uploader or for a
+policy, copyright claim, terminated account) answers `video_unavailable` instead (VBM-597). Then the unchanged checks give 429 `request_blocked` and 503
 `connection_error`; everything else is 404 `other`. Callers may treat the first five codes as definitive (never retry);
 `video_unplayable`, `other`, `request_blocked`, `connection_error` and a missing `reason` are not. A library bump that
 adds an error class is caught by the completeness test in `tests/test_youtube.py`.
